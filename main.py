@@ -53,7 +53,6 @@ def download_video_with_library(url, output_dir):
         'ignoreerrors': 'only_download',
         'postprocessors': [{'key': 'FFmpegConcat', 'only_multi_video': True, 'when': 'playlist'}],
         'retries': 10,
-        'verbose': True,  # Set to True for more detailed output
     }
 
     try:
