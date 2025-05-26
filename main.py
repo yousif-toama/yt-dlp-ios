@@ -47,12 +47,17 @@ def download_video_with_library(url, output_dir, is_youtube=True):
         ydl_opts = {
             'format': 'bestvideo[height<=?1080][fps<=?60][vcodec!*=av0]+bestaudio/best',
             'outtmpl': output_template,
-            'noplaylist': True,
+            'noplaylist': False,
             'quiet': False,
             'extract_flat': 'discard_in_playlist',
+            'final_ext': 'mkv',
             'fragment_retries': 10,
             'ignoreerrors': 'only_download',
-            'postprocessors': [{'key': 'FFmpegConcat', 'only_multi_video': True, 'when': 'playlist'}],
+            'merge_output_format': 'mkv',
+            'postprocessors': [
+                {'key': 'FFmpegVideoRemuxer', 'preferedformat': 'mkv'},
+                {'key': 'FFmpegConcat', 'only_multi_video': True, 'when': 'playlist'},
+            ],
             'retries': 10,
         }
     else:
@@ -61,9 +66,14 @@ def download_video_with_library(url, output_dir, is_youtube=True):
             'noplaylist': True,
             'quiet': False,
             'extract_flat': 'discard_in_playlist',
+            'final_ext': 'mkv',
             'fragment_retries': 10,
             'ignoreerrors': 'only_download',
-            'postprocessors': [{'key': 'FFmpegConcat', 'only_multi_video': True, 'when': 'playlist'}],
+            'merge_output_format': 'mkv',
+            'postprocessors': [
+                {'key': 'FFmpegVideoRemuxer', 'preferedformat': 'mkv'},
+                {'key': 'FFmpegConcat', 'only_multi_video': True, 'when': 'playlist'},
+            ],
             'retries': 10,
         }
 
