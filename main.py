@@ -30,7 +30,7 @@ def get_documents_folder():
     return documents_folder
 
 
-def download_video_with_library(url, output_dir):
+def download_video_with_library(url, output_dir, is_youtube=True):
     """
     Downloads video from the given URL using the yt-dlp Python library.
     Saves the video into the specified output_dir.
@@ -43,17 +43,29 @@ def download_video_with_library(url, output_dir):
     # Define the output template for the filename within the output_dir
     output_template = os.path.join(output_dir, '%(title)s.%(ext)s')
 
-    ydl_opts = {
-        'format': 'bestvideo[height<=?1080][fps<=?60][vcodec!*=av0]+bestaudio/best',
-        'outtmpl': output_template,
-        'noplaylist': True,
-        'quiet': False,
-        'extract_flat': 'discard_in_playlist',
-        'fragment_retries': 10,
-        'ignoreerrors': 'only_download',
-        'postprocessors': [{'key': 'FFmpegConcat', 'only_multi_video': True, 'when': 'playlist'}],
-        'retries': 10,
-    }
+    if is_youtube:
+        ydl_opts = {
+            'format': 'bestvideo[height<=?1080][fps<=?60][vcodec!*=av0]+bestaudio/best',
+            'outtmpl': output_template,
+            'noplaylist': True,
+            'quiet': False,
+            'extract_flat': 'discard_in_playlist',
+            'fragment_retries': 10,
+            'ignoreerrors': 'only_download',
+            'postprocessors': [{'key': 'FFmpegConcat', 'only_multi_video': True, 'when': 'playlist'}],
+            'retries': 10,
+        }
+    else:
+        ydl_opts = {
+            'outtmpl': output_template,
+            'noplaylist': True,
+            'quiet': False,
+            'extract_flat': 'discard_in_playlist',
+            'fragment_retries': 10,
+            'ignoreerrors': 'only_download',
+            'postprocessors': [{'key': 'FFmpegConcat', 'only_multi_video': True, 'when': 'playlist'}],
+            'retries': 10,
+        }
 
     try:
         print(f'Starting download for URL: {url} with yt-dlp library.')
@@ -167,6 +179,7 @@ def main():
 
     args = parser.parse_args()
     video_url = args.url
+    is_youtube = 'youtube.com' in video_url or 'youtu.be' in video_url
 
     if not yt_dlp:  # Check if library was successfully imported
         print('Exiting because yt-dlp library is not available.')
@@ -181,7 +194,7 @@ def main():
     print(f'Attempting to save video to: {documents_folder}')
 
     # Use the new function
-    downloaded_file_path = download_video_with_library(video_url, documents_folder)
+    downloaded_file_path = download_video_with_library(video_url, documents_folder, is_youtube)
 
     if downloaded_file_path:
         print(f'\nProcess complete. Video should be available at: {downloaded_file_path}')
