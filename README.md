@@ -18,7 +18,6 @@ While this project is packaged for use with a-Shell on iOS, the core Python scri
     ```
 5.  Run the installation script:
     ```sh
-    cd ~/Documents/yt-dlp-ios.git
     ~/Documents/yt-dlp-ios.git/install.sh
     ```
 
