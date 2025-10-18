@@ -36,9 +36,9 @@ yt-dl.sh "VIDEO_URL_HERE"
 The script will download the video and save it to your ~/Documents folder. After the download, it will automatically open the iOS Shortcuts app, allowing you to chain it into other actions, like saving the file to your Photos.
 
 ### 2. From an iOS Shortcut
-You can use this script as part of an iOS Shortcut for a one-tap download from the Share Sheet.
+You can use this script as part of an iOS Shortcut for a one-tap download from the Share Sheet. Please note that this will transfer the downloaded file to [VLC](https://itunes.apple.com/app/apple-store/id650377962?pt=454758&ct=vodownloadpage&mt=8), so ensure that you have it installed.
 
-[Link to iOS Shortcut: PLACEHOLDER_LINK]
+[Link to iOS Shortcut](https://www.icloud.com/shortcuts/4917cfda8a3f4ddfa886781581f76a45)
 
 ## Disclaimer
 This script uses yt-dlp under the hood, which supports a vast number of websites beyond YouTube.
