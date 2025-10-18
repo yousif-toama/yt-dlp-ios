@@ -1,2 +1,2 @@
 #!/usr/bin/env dash
-pip install --user --upgrade requirements.txt
+pip install --user --upgrade -r requirements.txt
