@@ -14,7 +14,7 @@ While this project is packaged for use with a-Shell on iOS, the core Python scri
     ```
 4.  Clone this repository using a-Shell's built-in git tool (`lg2`):
     ```sh
-    lg2 clone [https://github.com/yousif-toama/yt-dlp-ios.git](https://github.com/yousif-toama/yt-dlp-ios.git)
+    lg2 clone https://github.com/yousif-toama/yt-dlp-ios.git
     ```
 5.  Run the installation script:
     ```sh
