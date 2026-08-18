@@ -16,8 +16,14 @@ Instead, `ashell_jsc.py` registers a-Shell's built-in `jsc` command (Apple's Jav
 
 On other platforms `ashell_jsc.py` detects that `jsc` is absent and disables itself, leaving `yt-dlp` to use Deno or whatever else is installed.
 
-> [!NOTE]
-> When a-Shell runs *inside* a Shortcut extension rather than in the app, `jsc` degrades to a minimal, unoptimised JavaScript context that cannot solve the challenges. If you use the Shortcut below, configure it to run a-Shell **in app**.
+a-Shell exposes two different engines under the name `jsc`, and `ashell_jsc.py` detects which one it is talking to and adapts:
+
+| | In the app | Inside a Shortcut extension |
+| --- | --- | --- |
+| Engine | `jsc`, a hidden WKWebView | `jsc_core`, a minimal context |
+| Result arrives via | `console.log` on stdout | the script's completion value |
+
+The Share Sheet path uses the second one, where `console.log` output is discarded and a script ending in `console.log(...)` completes with `undefined` — which `jsc_core` rejects as "a result of an unsupported type". On that channel the solver's output is captured and handed back as the completion value instead.
 
 ## iOS Installation
 

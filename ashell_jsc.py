@@ -18,6 +18,7 @@ Import this module before constructing ``yt_dlp.YoutubeDL``; registration is glo
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import subprocess
@@ -38,8 +39,43 @@ except ImportError as exc:  # pragma: no cover - depends on the installed yt-dlp
 else:
     _IMPORT_ERROR = None
 
-_PROBE_SENTINEL = 'ashell_jsc_ok'
-_PROBE_SCRIPT = f'console.log("{_PROBE_SENTINEL}");'
+# a-Shell exposes two different JavaScript engines under the name `jsc`, and they report
+# results differently:
+#
+# - In the app, `jsc` runs in a hidden WKWebView. It is JIT compiled and console.log() goes to
+#   stdout.
+# - Inside a Shortcut extension, `jsc` degrades to `jsc_core`, a minimal unoptimised context.
+#   console.log() output is discarded; stdout gets the script's *completion value* instead. A
+#   script ending in console.log(...) completes with `undefined`, which it rejects outright
+#   with "JavaScript execution returned a result of an unsupported type".
+#
+# The probe runs both channels at once and records which one produced output.
+_CONSOLE_SENTINEL = 'ashell_jsc_console_ok'
+_COMPLETION_SENTINEL = 'ashell_jsc_completion_ok'
+_PROBE_SCRIPT = f'try {{ console.log("{_CONSOLE_SENTINEL}"); }} catch (e) {{}}\n"{_COMPLETION_SENTINEL}";\n'
+
+_OUTPUT_CONSOLE = 'console'
+_OUTPUT_COMPLETION = 'completion'
+
+# yt-dlp's solver program has no "use strict" prologue (checked against yt-dlp-ejs), so
+# prepending cannot silently drop the whole program out of strict mode.
+#
+# The solver's core bundle declares `var jsc = ...`, which collides with the `jsc` file API
+# object a-Shell injects as a global. A top-level `var` cannot overwrite a non-writable global
+# property, and in sloppy mode that failure is silent -- the name would still refer to
+# a-Shell's object and calling it would fail. Removing the global first sidesteps that.
+_COMMON_PREAMBLE = 'try { delete globalThis.jsc; } catch (e) {}\n'
+
+# Completion-value channel only: collect what the solver logs, then end the script with the
+# collected text so it becomes the completion value.
+_COMPLETION_PREAMBLE = (
+    'var __ashellOut = [];\n'
+    'var console = {\n'
+    "  log: (...a) => { __ashellOut.push(a.join(' ')); },\n"
+    '  info: () => {}, warn: () => {}, error: () => {}, debug: () => {},\n'
+    '};\n'
+)
+_COMPLETION_EPILOGUE = "\n;__ashellOut.join('\\n');\n"
 
 # a-Shell can only read and write ~/Documents, ~/Library and ~/tmp. The default temp directory
 # is inside the app container and readable, but keeping scripts next to everything else this
@@ -51,6 +87,7 @@ _SOLVE_TIMEOUT = 600
 
 _runtime_probe: bool | None = None
 _probe_detail: str | None = None
+_output_channel: str | None = None
 
 
 def _script_dir() -> str | None:
@@ -93,20 +130,35 @@ def _probe_runtime() -> bool:
     out a perfectly good Deno. ``shutil.which`` is no help: ``jsc`` is an ios_system builtin
     rather than a file on PATH, so the only reliable test is to run it.
     """
-    global _runtime_probe, _probe_detail
+    global _runtime_probe, _probe_detail, _output_channel
     if _IMPORT_ERROR is not None:
         return False
-    if _runtime_probe is None:
-        try:
-            stdout, stderr, returncode = _run_jsc(_PROBE_SCRIPT, timeout=_PROBE_TIMEOUT)
-        except Exception as exc:  # noqa: BLE001 - any failure here just means no jsc
-            _runtime_probe = False
-            _probe_detail = f'{type(exc).__name__}: {exc}'
-        else:
-            _runtime_probe = returncode == 0 and _PROBE_SENTINEL in stdout
-            if not _runtime_probe:
-                _probe_detail = f'exit {returncode}, stdout {stdout.strip()!r}, stderr {stderr.strip()!r}'
+    if _runtime_probe is not None:
+        return _runtime_probe
+
+    try:
+        stdout, stderr, returncode = _run_jsc(_PROBE_SCRIPT, timeout=_PROBE_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 - any failure here just means no usable jsc
+        _runtime_probe = False
+        _probe_detail = f'{type(exc).__name__}: {exc}'
+        return _runtime_probe
+
+    if _CONSOLE_SENTINEL in stdout:
+        _output_channel = _OUTPUT_CONSOLE
+    elif _COMPLETION_SENTINEL in stdout:
+        _output_channel = _OUTPUT_COMPLETION
+
+    _runtime_probe = _output_channel is not None
+    if not _runtime_probe:
+        _probe_detail = f'exit {returncode}, stdout {stdout.strip()!r}, stderr {stderr.strip()!r}'
     return _runtime_probe
+
+
+def _wrap_program(program: str) -> str:
+    """Adapt the solver program to whichever output channel this jsc reports results on."""
+    if _output_channel == _OUTPUT_COMPLETION:
+        return _COMMON_PREAMBLE + _COMPLETION_PREAMBLE + program + _COMPLETION_EPILOGUE
+    return _COMMON_PREAMBLE + program
 
 
 if _IMPORT_ERROR is None:
@@ -126,8 +178,8 @@ if _IMPORT_ERROR is None:
             return self._available and _probe_runtime()
 
         def _run_js_runtime(self, stdin: str, /) -> str:
-            self.logger.debug(f'Running a-Shell jsc on a {len(stdin)} byte script')
-            stdout, stderr, returncode = _run_jsc(stdin)
+            self.logger.debug(f'Running a-Shell jsc ({_output_channel} output) on a {len(stdin)} byte script')
+            stdout, stderr, returncode = _run_jsc(_wrap_program(stdin))
 
             # yt-dlp's own QuickJS provider also treats any stderr output as a failure. jsc is
             # noisier than that, so only the exit status is fatal here.
@@ -146,10 +198,21 @@ if _IMPORT_ERROR is None:
             The caller json.loads() this directly, so anything the environment prints
             alongside the result -- a banner, a stray console.log -- would break parsing.
             JSON.stringify never emits a raw newline, so the result is always one line.
+
+            On the completion-value channel the result may also arrive quoted, since jsc is
+            rendering a JavaScript string rather than echoing what was printed.
             """
             for line in reversed(stdout.splitlines()):
+                line = line.strip()
                 if line.startswith('{'):
                     return line
+                if line.startswith('"'):
+                    try:
+                        unquoted = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(unquoted, str) and unquoted.lstrip().startswith('{'):
+                        return unquoted.strip()
 
             message = 'a-Shell jsc produced no JSON output'
             if stderr:
