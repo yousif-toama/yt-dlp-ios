@@ -30,6 +30,7 @@ import os
 import pathlib
 import subprocess
 import tempfile
+import time
 
 # ``EJSBaseJCP`` is internal yt-dlp API -- only ``...jsc.provider`` is public -- and yt-dl.sh
 # upgrades yt-dlp on every run, so a future release may move or rename it. Failing soft here
@@ -54,6 +55,10 @@ _PROBE_SCRIPT = f'console.log("{_PROBE_SENTINEL}");\n'
 
 _PROBE_TIMEOUT = 60
 _SOLVE_TIMEOUT = 600
+
+# The first attempt runs as-is; later ones reload a-Shell's webview and wait for it.
+_PROBE_ATTEMPTS = 3
+_RESET_SETTLE_SECONDS = 3
 
 _runtime_probe: bool | None = None
 _probe_detail: str | None = None
@@ -151,6 +156,23 @@ def _run_jsc(program: str, timeout: int = _SOLVE_TIMEOUT) -> tuple[str, str, int
     return output, completed.stderr or '', completed.returncode
 
 
+def _reset_runtime() -> None:
+    """Ask a-Shell to reload the webview jsc runs against, and give it time to load."""
+    try:
+        subprocess.run(
+            ['jsc', '--reset'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001 - best effort recovery
+        pass
+    time.sleep(_RESET_SETTLE_SECONDS)
+
+
 def _probe_runtime() -> bool:
     """Check that a usable ``jsc`` exists, caching the result.
 
@@ -166,16 +188,29 @@ def _probe_runtime() -> bool:
     if _runtime_probe is not None:
         return _runtime_probe
 
-    try:
-        output, stderr, returncode = _run_jsc(_PROBE_SCRIPT, timeout=_PROBE_TIMEOUT)
-    except Exception as exc:  # noqa: BLE001 - any failure here just means no usable jsc
-        _runtime_probe = False
-        _probe_detail = f'{type(exc).__name__}: {exc}'
-        return _runtime_probe
+    for attempt in range(_PROBE_ATTEMPTS):
+        if attempt:
+            # jsc evaluates against a-Shell's wasm.html, which supplies every route out of the
+            # script: the jsc file API, println(), and console.log (rebound to println on
+            # wasm.html:141). A Shortcut can run before that page has finished loading, in
+            # which case all three are missing at once. `jsc --reset` reloads the webview.
+            _reset_runtime()
+        try:
+            output, stderr, returncode = _run_jsc(_PROBE_SCRIPT, timeout=_PROBE_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 - any failure here just means no usable jsc
+            _runtime_probe = False
+            _probe_detail = f'{type(exc).__name__}: {exc}'
+            return _runtime_probe
 
-    _runtime_probe = _PROBE_SENTINEL in output
-    if not _runtime_probe:
-        _probe_detail = f'exit {returncode}, output {output.strip()[:200]!r}, stderr {stderr.strip()[:200]!r}'
+        if _PROBE_SENTINEL in output:
+            _runtime_probe = True
+            return _runtime_probe
+        _probe_detail = (
+            f'after {attempt + 1} attempt(s): exit {returncode}, '
+            f'output {output.strip()[:150]!r}, stderr {stderr.strip()[:150]!r}'
+        )
+
+    _runtime_probe = False
     return _runtime_probe
 
 
