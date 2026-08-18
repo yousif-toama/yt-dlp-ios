@@ -33,7 +33,6 @@ try:
         register_preference,
         register_provider,
     )
-    from yt_dlp.utils import Popen
 except ImportError as exc:  # pragma: no cover - depends on the installed yt-dlp
     _IMPORT_ERROR: ImportError | None = exc
 else:
@@ -47,7 +46,11 @@ _PROBE_SCRIPT = f'console.log("{_PROBE_SENTINEL}");'
 # project writes avoids depending on that.
 _SCRIPT_DIR = os.path.expanduser('~/Documents')
 
+_PROBE_TIMEOUT = 60
+_SOLVE_TIMEOUT = 600
+
 _runtime_probe: bool | None = None
+_probe_detail: str | None = None
 
 
 def _script_dir() -> str | None:
@@ -55,21 +58,31 @@ def _script_dir() -> str | None:
     return _SCRIPT_DIR if os.path.isdir(_SCRIPT_DIR) else None
 
 
-def _run_jsc(program: str) -> tuple[str, str, int]:
-    """Run ``program`` under a-Shell's jsc, returning (stdout, stderr, returncode)."""
+def _run_jsc(program: str, timeout: int = _SOLVE_TIMEOUT) -> tuple[str, str, int]:
+    """Run ``program`` under a-Shell's jsc, returning (stdout, stderr, returncode).
+
+    Deliberately plain ``subprocess.run`` rather than ``yt_dlp.utils.Popen``. That wrapper
+    passes an explicit ``env=os.environ.copy()``, and ``jsc`` is an ios_system builtin
+    resolved through a-Shell's own command dictionary rather than a file on PATH, so handing
+    it a rebuilt environment stops it being found. This is the exact call shape verified to
+    work on-device.
+    """
     script = tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8', dir=_script_dir())
     try:
         script.write(program)
         script.close()
-        return Popen.run(
+        completed = subprocess.run(
             ['jsc', script.name],
-            text=True,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
         )
     finally:
         pathlib.Path(script.name).unlink(missing_ok=True)
+    return completed.stdout or '', completed.stderr or '', completed.returncode
 
 
 def _probe_runtime() -> bool:
@@ -80,16 +93,19 @@ def _probe_runtime() -> bool:
     out a perfectly good Deno. ``shutil.which`` is no help: ``jsc`` is an ios_system builtin
     rather than a file on PATH, so the only reliable test is to run it.
     """
-    global _runtime_probe
+    global _runtime_probe, _probe_detail
     if _IMPORT_ERROR is not None:
         return False
     if _runtime_probe is None:
         try:
-            stdout, _, returncode = _run_jsc(_PROBE_SCRIPT)
-        except (OSError, ValueError):
+            stdout, stderr, returncode = _run_jsc(_PROBE_SCRIPT, timeout=_PROBE_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 - any failure here just means no jsc
             _runtime_probe = False
+            _probe_detail = f'{type(exc).__name__}: {exc}'
         else:
             _runtime_probe = returncode == 0 and _PROBE_SENTINEL in stdout
+            if not _runtime_probe:
+                _probe_detail = f'exit {returncode}, stdout {stdout.strip()!r}, stderr {stderr.strip()!r}'
     return _runtime_probe
 
 
@@ -157,5 +173,6 @@ def unavailable_reason() -> str | None:
     if _IMPORT_ERROR is not None:
         return f'this yt-dlp version has no compatible JS challenge provider API ({_IMPORT_ERROR})'
     if not _probe_runtime():
-        return "a-Shell's 'jsc' command is not available"
+        detail = f' ({_probe_detail})' if _probe_detail else ''
+        return f"a-Shell's 'jsc' command did not run{detail}"
     return None
