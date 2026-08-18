@@ -81,6 +81,10 @@ def download_video_with_library(url, output_dir, is_youtube=True):
             # android_vr stays as a fallback; tv has the higher client priority (40 vs 10),
             # so its formats win when both supply the same itag.
             'extractor_args': {'youtube': {'player_client': ['tv', 'android_vr']}},
+            # YouTube stops serving these URLs after roughly 10 MB in a single request, which
+            # surfaces as HTTP 403 partway through an otherwise fast download. Requesting the
+            # media in explicit chunks keeps every request under that limit.
+            'http_chunk_size': 10485760,
             'fragment_retries': 10,
             'ignoreerrors': 'only_download',
             'merge_output_format': 'mkv',
@@ -98,6 +102,10 @@ def download_video_with_library(url, output_dir, is_youtube=True):
             'extract_flat': 'discard_in_playlist',
             'final_ext': 'mkv',
             'remote_components': ['ejs:github'],
+            # YouTube stops serving these URLs after roughly 10 MB in a single request, which
+            # surfaces as HTTP 403 partway through an otherwise fast download. Requesting the
+            # media in explicit chunks keeps every request under that limit.
+            'http_chunk_size': 10485760,
             'fragment_retries': 10,
             'ignoreerrors': 'only_download',
             'merge_output_format': 'mkv',

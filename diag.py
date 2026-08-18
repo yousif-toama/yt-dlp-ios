@@ -10,6 +10,7 @@ client that supplied it and whether its URL carries an unsolved throttling param
 """
 
 import sys
+from urllib.parse import parse_qs, urlparse
 
 import ashell_jsc
 
@@ -35,15 +36,15 @@ def report_solver():
 
 def describe_format(fmt):
     """One line per format: what it is, which client supplied it, and how it is signed."""
-    url = fmt.get('url') or ''
-    return '  {:<14} {:<5} {:<11} {:<9} {:<10} n_param={:<5} pot={:<5} {}'.format(
+    query = parse_qs(urlparse(fmt.get('url') or '').query)
+    return '  {:<14} {:<5} {:<11} {:<9} {:<10} n={:<5} pot={:<5} {}'.format(
         str(fmt.get('format_id'))[:14],
         str(fmt.get('ext'))[:5],
         f'{fmt.get("width")}x{fmt.get("height")}'[:11],
         str(fmt.get('protocol'))[:9],
         str(fmt.get('vcodec') or fmt.get('acodec'))[:10],
-        'n=' in url,
-        'pot=' in url,
+        'n' in query,
+        'pot' in query,
         str(fmt.get('format_note') or '')[:40],
     )
 
