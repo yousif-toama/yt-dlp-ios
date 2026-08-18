@@ -8,10 +8,17 @@ the n-sig/sig challenges. None of the runtimes yt-dlp supports natively work on 
   wasm by handing it to the WKWebView JS engine, so when yt-dlp spawns it as a subprocess of
   Python -- which is already occupying that thread -- the call deadlocks and never returns.
 
-a-Shell does ship Apple's JavaScriptCore as the ``jsc`` command, which is native, JIT
-compiled, and works fine when spawned from Python. This module teaches yt-dlp to use it, via
-the JS Challenge Provider plugin API documented in
-``yt_dlp/extractor/youtube/jsc/README.md``.
+a-Shell's ``jsc`` command does work when spawned from Python. It runs the script through
+``wasmWebView.evaluateJavaScript`` (see ``SceneDelegate.swift:executeJavascript``), where the
+page is ``wasm.html``. Two consequences drive the design here:
+
+- **Output does not come back on stdout.** ``evaluateJavaScript`` only forwards the script's
+  completion value, and in a Shortcut run even a bare ``42;`` comes back as "a result of an
+  unsupported type". ``wasm.html`` instead provides ``println()`` and a ``jsc`` file API, so
+  the result is written to a file and read back from Python. That works in every context.
+- **``wasm.html`` declares ``const jsc``.** yt-dlp's solver bundle declares ``var jsc`` at top
+  level, which would be a redeclaration conflict against that lexical binding, so the program
+  is wrapped in a function to scope it.
 
 Import this module before constructing ``yt_dlp.YoutubeDL``; registration is global.
 """
@@ -39,74 +46,68 @@ except ImportError as exc:  # pragma: no cover - depends on the installed yt-dlp
 else:
     _IMPORT_ERROR = None
 
-# a-Shell exposes two different JavaScript engines under the name `jsc`, and they report
-# results differently:
-#
-# - In the app, `jsc` runs in a hidden WKWebView. It is JIT compiled and console.log() goes to
-#   stdout.
-# - Inside a Shortcut extension, `jsc` degrades to `jsc_core`, a minimal unoptimised context.
-#   console.log() output is discarded; stdout gets the script's *completion value* instead. A
-#   script ending in console.log(...) completes with `undefined`, which it rejects outright
-#   with "JavaScript execution returned a result of an unsupported type".
-#
-# The probe runs both channels at once and records which one produced output.
-_CONSOLE_SENTINEL = 'ashell_jsc_console_ok'
-_COMPLETION_SENTINEL = 'ashell_jsc_completion_ok'
-_PROBE_SCRIPT = f'try {{ console.log("{_CONSOLE_SENTINEL}"); }} catch (e) {{}}\n"{_COMPLETION_SENTINEL}";\n'
-
-_OUTPUT_CONSOLE = 'console'
-_OUTPUT_COMPLETION = 'completion'
-
-# yt-dlp's solver program has no "use strict" prologue (checked against yt-dlp-ejs), so
-# prepending cannot silently drop the whole program out of strict mode.
-#
-# The solver's core bundle declares `var jsc = ...`, which collides with the `jsc` file API
-# object a-Shell injects as a global. A top-level `var` cannot overwrite a non-writable global
-# property, and in sloppy mode that failure is silent -- the name would still refer to
-# a-Shell's object and calling it would fail. Removing the global first sidesteps that.
-_COMMON_PREAMBLE = 'try { delete globalThis.jsc; } catch (e) {}\n'
-
-# Completion-value channel only: collect what the solver logs, then end the script with the
-# collected text so it becomes the completion value.
-_COMPLETION_PREAMBLE = (
-    'var __ashellOut = [];\n'
-    'var console = {\n'
-    "  log: (...a) => { __ashellOut.push(a.join(' ')); },\n"
-    '  info: () => {}, warn: () => {}, error: () => {}, debug: () => {},\n'
-    '};\n'
-)
-_COMPLETION_EPILOGUE = "\n;__ashellOut.join('\\n');\n"
-
-# a-Shell can only read and write ~/Documents, ~/Library and ~/tmp. The default temp directory
-# is inside the app container and readable, but keeping scripts next to everything else this
-# project writes avoids depending on that.
+# a-Shell can only read and write ~/Documents, ~/Library and ~/tmp.
 _SCRIPT_DIR = os.path.expanduser('~/Documents')
+
+_PROBE_SENTINEL = 'ashell_jsc_ok'
+_PROBE_SCRIPT = f'console.log("{_PROBE_SENTINEL}");\n'
 
 _PROBE_TIMEOUT = 60
 _SOLVE_TIMEOUT = 600
 
 _runtime_probe: bool | None = None
 _probe_detail: str | None = None
-_output_channel: str | None = None
+
+
+def _wrap_program(program: str, result_path: str) -> str:
+    """Wrap the solver program so its output reaches a file rather than stdout.
+
+    The a-Shell APIs are captured as parameters before the program runs, because the solver
+    bundle shadows the name ``jsc`` with its own function inside this same scope.
+    """
+    return (
+        '(function (__api, __println, __console) {\n'
+        '  var __out = [];\n'
+        '  var console = {\n'
+        "    log: function () { __out.push(Array.prototype.join.call(arguments, ' ')); },\n"
+        '    info: function () {}, warn: function () {},\n'
+        '    error: function () {}, debug: function () {},\n'
+        '  };\n'
+        '  try {\n'
+        f'{program}\n'
+        '  } finally {\n'
+        "    var __text = __out.join('\\n');\n"
+        f'    try {{ if (__api) __api.writeFile({json.dumps(result_path)}, __text); }} catch (e) {{}}\n'
+        '    try { if (__println) __println(__text); } catch (e) {}\n'
+        '    try { if (!__api && !__println && __console) __console.log(__text); } catch (e) {}\n'
+        '  }\n'
+        "})(typeof jsc !== 'undefined' ? jsc : null,\n"
+        "   typeof println !== 'undefined' ? println : null,\n"
+        "   typeof console !== 'undefined' ? console : null);\n"
+    )
 
 
 def _script_dir() -> str | None:
-    """Return the directory to write temporary scripts into, or None for the system default."""
+    """Return the directory to write temporary files into, or None for the system default."""
     return _SCRIPT_DIR if os.path.isdir(_SCRIPT_DIR) else None
 
 
 def _run_jsc(program: str, timeout: int = _SOLVE_TIMEOUT) -> tuple[str, str, int]:
-    """Run ``program`` under a-Shell's jsc, returning (stdout, stderr, returncode).
+    """Run ``program`` under a-Shell's jsc, returning (output, stderr, returncode).
 
-    Deliberately plain ``subprocess.run`` rather than ``yt_dlp.utils.Popen``. That wrapper
+    ``output`` is whatever the program logged, read back from the result file when jsc's file
+    API is available and falling back to stdout otherwise.
+
+    Deliberately plain ``subprocess.run`` rather than ``yt_dlp.utils.Popen``: that wrapper
     passes an explicit ``env=os.environ.copy()``, and ``jsc`` is an ios_system builtin
-    resolved through a-Shell's own command dictionary rather than a file on PATH, so handing
-    it a rebuilt environment stops it being found. This is the exact call shape verified to
-    work on-device.
+    resolved through a-Shell's own command dictionary rather than a file on PATH.
     """
-    script = tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8', dir=_script_dir())
+    directory = _script_dir()
+    script = tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8', dir=directory)
+    result = tempfile.NamedTemporaryFile(mode='w', suffix='.out', delete=False, encoding='utf-8', dir=directory)
+    result.close()
     try:
-        script.write(program)
+        script.write(_wrap_program(program, result.name))
         script.close()
         completed = subprocess.run(
             ['jsc', script.name],
@@ -117,9 +118,13 @@ def _run_jsc(program: str, timeout: int = _SOLVE_TIMEOUT) -> tuple[str, str, int
             timeout=timeout,
             check=False,
         )
+        output = pathlib.Path(result.name).read_text(encoding='utf-8', errors='replace')
+        if not output.strip():
+            output = completed.stdout or ''
     finally:
         pathlib.Path(script.name).unlink(missing_ok=True)
-    return completed.stdout or '', completed.stderr or '', completed.returncode
+        pathlib.Path(result.name).unlink(missing_ok=True)
+    return output, completed.stderr or '', completed.returncode
 
 
 def _probe_runtime() -> bool:
@@ -128,37 +133,26 @@ def _probe_runtime() -> bool:
     main.py is cross platform, so this must be false everywhere except a-Shell -- otherwise
     the provider would claim every YouTube challenge on a desktop and then fail it, shutting
     out a perfectly good Deno. ``shutil.which`` is no help: ``jsc`` is an ios_system builtin
-    rather than a file on PATH, so the only reliable test is to run it.
+    rather than a file on PATH, so the only reliable test is to run it. The probe deliberately
+    exercises the same wrapper and output channel the real solve uses.
     """
-    global _runtime_probe, _probe_detail, _output_channel
+    global _runtime_probe, _probe_detail
     if _IMPORT_ERROR is not None:
         return False
     if _runtime_probe is not None:
         return _runtime_probe
 
     try:
-        stdout, stderr, returncode = _run_jsc(_PROBE_SCRIPT, timeout=_PROBE_TIMEOUT)
+        output, stderr, returncode = _run_jsc(_PROBE_SCRIPT, timeout=_PROBE_TIMEOUT)
     except Exception as exc:  # noqa: BLE001 - any failure here just means no usable jsc
         _runtime_probe = False
         _probe_detail = f'{type(exc).__name__}: {exc}'
         return _runtime_probe
 
-    if _CONSOLE_SENTINEL in stdout:
-        _output_channel = _OUTPUT_CONSOLE
-    elif _COMPLETION_SENTINEL in stdout:
-        _output_channel = _OUTPUT_COMPLETION
-
-    _runtime_probe = _output_channel is not None
+    _runtime_probe = _PROBE_SENTINEL in output
     if not _runtime_probe:
-        _probe_detail = f'exit {returncode}, stdout {stdout.strip()!r}, stderr {stderr.strip()!r}'
+        _probe_detail = f'exit {returncode}, output {output.strip()[:200]!r}, stderr {stderr.strip()[:200]!r}'
     return _runtime_probe
-
-
-def _wrap_program(program: str) -> str:
-    """Adapt the solver program to whichever output channel this jsc reports results on."""
-    if _output_channel == _OUTPUT_COMPLETION:
-        return _COMMON_PREAMBLE + _COMPLETION_PREAMBLE + program + _COMPLETION_EPILOGUE
-    return _COMMON_PREAMBLE + program
 
 
 if _IMPORT_ERROR is None:
@@ -178,8 +172,8 @@ if _IMPORT_ERROR is None:
             return self._available and _probe_runtime()
 
         def _run_js_runtime(self, stdin: str, /) -> str:
-            self.logger.debug(f'Running a-Shell jsc ({_output_channel} output) on a {len(stdin)} byte script')
-            stdout, stderr, returncode = _run_jsc(_wrap_program(stdin))
+            self.logger.debug(f'Running a-Shell jsc on a {len(stdin)} byte script')
+            output, stderr, returncode = _run_jsc(stdin)
 
             # yt-dlp's own QuickJS provider also treats any stderr output as a failure. jsc is
             # noisier than that, so only the exit status is fatal here.
@@ -189,30 +183,19 @@ if _IMPORT_ERROR is None:
                     message = f'{message}: {stderr.strip()}'
                 raise JsChallengeProviderError(message)
 
-            return self._extract_json(stdout, stderr)
+            return self._extract_json(output, stderr)
 
         @staticmethod
-        def _extract_json(stdout: str, stderr: str, /) -> str:
+        def _extract_json(output: str, stderr: str, /) -> str:
             """Return the solver's JSON result line from jsc's output.
 
-            The caller json.loads() this directly, so anything the environment prints
-            alongside the result -- a banner, a stray console.log -- would break parsing.
-            JSON.stringify never emits a raw newline, so the result is always one line.
-
-            On the completion-value channel the result may also arrive quoted, since jsc is
-            rendering a JavaScript string rather than echoing what was printed.
+            The caller json.loads() this directly, so anything the environment emits alongside
+            the result would break parsing. JSON.stringify never emits a raw newline, so the
+            result is always confined to one line.
             """
-            for line in reversed(stdout.splitlines()):
-                line = line.strip()
-                if line.startswith('{'):
-                    return line
-                if line.startswith('"'):
-                    try:
-                        unquoted = json.loads(line)
-                    except ValueError:
-                        continue
-                    if isinstance(unquoted, str) and unquoted.lstrip().startswith('{'):
-                        return unquoted.strip()
+            for line in reversed(output.splitlines()):
+                if line.strip().startswith('{'):
+                    return line.strip()
 
             message = 'a-Shell jsc produced no JSON output'
             if stderr:
@@ -226,22 +209,15 @@ if _IMPORT_ERROR is None:
         return 500
 
 
-# Probing a-Shell's jsc by reading its source only gets so far: `jsc` hands the file to
-# WKWebView.evaluateJavaScript, whose result must be a type WebKit can serialise, and the
-# observable behaviour differs between a terminal session and a Shortcut run. When the probe
-# fails, run a spread of one-liners so the failure reports which channel works rather than
-# just that none did.
+# a-Shell's jsc behaves differently between a terminal session and a Shortcut run, so when the
+# probe fails, report what each candidate channel actually did rather than only that none worked.
 _DIAGNOSTIC_CASES = (
-    ('bare string', '"diag_value";\n'),
-    ('bare number', '42;\n'),
-    ('console only', 'console.log("diag_value");\n'),
-    ('console then string', 'console.log("diag_console"); "diag_value";\n'),
-    ('typeof console', 'typeof console;\n'),
-    ('typeof globalThis.jsc', 'typeof globalThis.jsc;\n'),
-    ('typeof process', 'typeof process;\n'),
-    ('call returning string', 'JSON.stringify({a: 1});\n'),
-    ('var then string', 'var diag = 1; "diag_value";\n'),
-    ('current probe', _PROBE_SCRIPT),
+    ('wrapped console.log', _PROBE_SCRIPT),
+    ('println direct', f'println("{_PROBE_SENTINEL}");\n'),
+    ('typeof jsc', 'console.log(typeof jsc);\n'),
+    ('typeof println', 'console.log(typeof println);\n'),
+    ('typeof globalThis', 'console.log(typeof globalThis);\n'),
+    ('writeFile support', 'console.log(typeof jsc === "undefined" ? "no jsc" : typeof jsc.writeFile);\n'),
 )
 
 
@@ -250,11 +226,11 @@ def diagnostic_report() -> list[str]:
     report = []
     for label, script in _DIAGNOSTIC_CASES:
         try:
-            stdout, stderr, returncode = _run_jsc(script, timeout=_PROBE_TIMEOUT)
+            output, stderr, returncode = _run_jsc(script, timeout=_PROBE_TIMEOUT)
         except Exception as exc:  # noqa: BLE001 - the report is the point, not the failure
             report.append(f'  {label}: {type(exc).__name__}: {exc}')
         else:
-            report.append(f'  {label}: rc={returncode} out={stdout.strip()!r} err={stderr.strip()!r}')
+            report.append(f'  {label}: rc={returncode} out={output.strip()[:120]!r} err={stderr.strip()[:120]!r}')
     return report
 
 

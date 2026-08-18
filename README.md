@@ -16,14 +16,10 @@ Instead, `ashell_jsc.py` registers a-Shell's built-in `jsc` command (Apple's Jav
 
 On other platforms `ashell_jsc.py` detects that `jsc` is absent and disables itself, leaving `yt-dlp` to use Deno or whatever else is installed.
 
-a-Shell exposes two different engines under the name `jsc`, and `ashell_jsc.py` detects which one it is talking to and adapts:
+`jsc` runs the script through `wasmWebView.evaluateJavaScript`, whose page is a-Shell's `wasm.html`. Two things follow from that, and `ashell_jsc.py` handles both:
 
-| | In the app | Inside a Shortcut extension |
-| --- | --- | --- |
-| Engine | `jsc`, a hidden WKWebView | `jsc_core`, a minimal context |
-| Result arrives via | `console.log` on stdout | the script's completion value |
-
-The Share Sheet path uses the second one, where `console.log` output is discarded and a script ending in `console.log(...)` completes with `undefined` — which `jsc_core` rejects as "a result of an unsupported type". On that channel the solver's output is captured and handed back as the completion value instead.
+- **Results do not come back on stdout.** Only the script's completion value is forwarded, and in a Shortcut run even a bare `42;` returns "a result of an unsupported type". `wasm.html` provides `println()` and a `jsc` file API instead, so the solver's output is written to a file and read back from Python.
+- **`wasm.html` declares `const jsc`.** The solver bundle declares `var jsc` at top level, which is a redeclaration conflict against that lexical binding, so the program is wrapped in a function to scope it.
 
 ## iOS Installation
 
