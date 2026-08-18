@@ -226,6 +226,38 @@ if _IMPORT_ERROR is None:
         return 500
 
 
+# Probing a-Shell's jsc by reading its source only gets so far: `jsc` hands the file to
+# WKWebView.evaluateJavaScript, whose result must be a type WebKit can serialise, and the
+# observable behaviour differs between a terminal session and a Shortcut run. When the probe
+# fails, run a spread of one-liners so the failure reports which channel works rather than
+# just that none did.
+_DIAGNOSTIC_CASES = (
+    ('bare string', '"diag_value";\n'),
+    ('bare number', '42;\n'),
+    ('console only', 'console.log("diag_value");\n'),
+    ('console then string', 'console.log("diag_console"); "diag_value";\n'),
+    ('typeof console', 'typeof console;\n'),
+    ('typeof globalThis.jsc', 'typeof globalThis.jsc;\n'),
+    ('typeof process', 'typeof process;\n'),
+    ('call returning string', 'JSON.stringify({a: 1});\n'),
+    ('var then string', 'var diag = 1; "diag_value";\n'),
+    ('current probe', _PROBE_SCRIPT),
+)
+
+
+def diagnostic_report() -> list[str]:
+    """Run each candidate output channel and describe what jsc did with it."""
+    report = []
+    for label, script in _DIAGNOSTIC_CASES:
+        try:
+            stdout, stderr, returncode = _run_jsc(script, timeout=_PROBE_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 - the report is the point, not the failure
+            report.append(f'  {label}: {type(exc).__name__}: {exc}')
+        else:
+            report.append(f'  {label}: rc={returncode} out={stdout.strip()!r} err={stderr.strip()!r}')
+    return report
+
+
 def is_available() -> bool:
     """Whether the provider is registered and a-Shell's jsc can actually run."""
     return _IMPORT_ERROR is None and _probe_runtime()
