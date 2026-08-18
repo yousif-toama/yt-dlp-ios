@@ -4,6 +4,8 @@ A script to download videos using `yt-dlp` on iOS via the [a-Shell app](https://
 
 While this project is packaged for use with a-Shell on iOS, the core Python script (`main.py`) is cross-platform and will run on any system where Python and [yt-dlp](https://github.com/yt-dlp/yt-dlp) are supported. The script is configured to download the best available format (up to 1080p, 60fps) and save it as an `.mkv` file in your `Documents` folder.
 
+`yt-dlp` is installed with the `curl-cffi` extra, which enables browser impersonation to avoid being blocked by some sites. This requires a build of `curl-cffi` that runs on iOS, available in a-Shell v2 and later.
+
 ## iOS Installation
 
 1.  Download the **[a-Shell](https://apps.apple.com/us/app/a-shell/id1473805438)** app from the App Store.

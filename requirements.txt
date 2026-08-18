@@ -1,1 +1,1 @@
-yt-dlp
+yt-dlp[curl-cffi]
