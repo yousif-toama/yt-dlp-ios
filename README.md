@@ -16,10 +16,18 @@ Instead, `ashell_jsc.py` registers a-Shell's built-in `jsc` command (Apple's Jav
 
 On other platforms `ashell_jsc.py` detects that `jsc` is absent and disables itself, leaving `yt-dlp` to use Deno or whatever else is installed.
 
-`jsc` runs the script through `wasmWebView.evaluateJavaScript`, whose page is a-Shell's `wasm.html`. Two things follow from that, and `ashell_jsc.py` handles both:
+`jsc` runs the script through `wasmWebView.evaluateJavaScript` (see `SceneDelegate.swift:executeJavascript`). Which routes out of the JS engine exist depends on what page that webview has loaded, and none can be assumed:
 
-- **Results do not come back on stdout.** Only the script's completion value is forwarded, and in a Shortcut run even a bare `42;` returns "a result of an unsupported type". `wasm.html` provides `println()` and a `jsc` file API instead, so the solver's output is written to a file and read back from Python.
-- **`wasm.html` declares `const jsc`.** The solver bundle declares `var jsc` at top level, which is a redeclaration conflict against that lexical binding, so the program is wrapped in a function to scope it.
+| Page loaded | Available routes |
+| --- | --- |
+| a-Shell's `wasm.html` | `jsc` file API, `println()`, and `console.log` (rebound to `println` at `wasm.html:141`) |
+| anything else | only the script's completion value |
+
+So `ashell_jsc.py` wraps the solver program to collect its output and then write it to a file, pass it to `println()`, *and* return it as the completion value. `evaluateJavaScript` rejects an `undefined` completion value with "a result of an unsupported type", which is why simply logging is not enough.
+
+The wrapper is a function rather than a prelude because `wasm.html` declares `const jsc` while the solver bundle declares `var jsc` at top level; unscoped, that is a redeclaration `SyntaxError`.
+
+yt-dlp also asks the solver to return the entire transformed player and then discards it. That is suppressed here, cutting roughly 4 MB per solve off the round trip across the webview bridge.
 
 ## iOS Installation
 

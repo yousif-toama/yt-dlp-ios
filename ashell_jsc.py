@@ -66,7 +66,13 @@ _probe_detail: str | None = None
 
 
 def _wrap_program(program: str, result_path: str) -> str:
-    """Wrap the solver program so its output reaches a file rather than stdout.
+    """Wrap the solver program so its output can get back out of the JS engine.
+
+    Which routes exist depends on what page the webview has loaded, and on device none of
+    them can be assumed. When ``wasm.html`` is loaded there is a ``jsc`` file API and
+    ``println()``; when it is not, the only route is the script's completion value, so the
+    wrapper returns its result as well as writing it. ``evaluateJavaScript`` rejects an
+    ``undefined`` completion value outright with "a result of an unsupported type".
 
     The a-Shell APIs are captured as parameters before the program runs, because the solver
     bundle shadows the name ``jsc`` with its own function inside this same scope.
@@ -81,12 +87,14 @@ def _wrap_program(program: str, result_path: str) -> str:
         '  };\n'
         '  try {\n'
         f'{program}\n'
-        '  } finally {\n'
-        "    var __text = __out.join('\\n');\n"
-        f'    try {{ if (__api) __api.writeFile({json.dumps(result_path)}, __text); }} catch (e) {{}}\n'
-        '    try { if (__println) __println(__text); } catch (e) {}\n'
-        '    try { if (!__api && !__println && __console) __console.log(__text); } catch (e) {}\n'
+        '  } catch (e) {\n'
+        "    __out.push('__ashell_error__ ' + (e && e.stack ? e.stack : e));\n"
         '  }\n'
+        "  var __text = __out.join('\\n');\n"
+        f'  try {{ if (__api) __api.writeFile({json.dumps(result_path)}, __text); }} catch (e) {{}}\n'
+        '  try { if (__println) __println(__text); } catch (e) {}\n'
+        '  try { if (!__api && !__println && __console) __console.log(__text); } catch (e) {}\n'
+        '  return __text;\n'
         "})(typeof jsc !== 'undefined' ? jsc : null,\n"
         "   typeof println !== 'undefined' ? println : null,\n"
         "   typeof console !== 'undefined' ? console : null);\n"
@@ -284,6 +292,8 @@ if _IMPORT_ERROR is None:
                     return line.strip()
 
             message = 'a-Shell jsc produced no JSON output'
+            if output.strip():
+                message = f'{message}, got {output.strip()[:300]!r}'
             if stderr:
                 message = f'{message}: {stderr.strip()}'
             raise JsChallengeProviderError(message)
