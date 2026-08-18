@@ -71,16 +71,17 @@ def download_video_with_library(url, output_dir, is_youtube=True):
             # yt-dlp-ejs package has drifted out of step. Works with any runtime; only
             # 'ejs:npm' is Deno/Bun-only.
             'remote_components': ['ejs:github'],
-            # Client choice is constrained by what this platform can produce. Of the clients
-            # needing neither authentication nor a PO token, yt-dlp defaults to android_vr,
-            # whose media URLs YouTube is currently rejecting with HTTP 403. 'tv' needs no
-            # auth and no PO token either, and does require the JS player -- which the jsc
-            # solver provides. The web clients are deliberately not requested: their
-            # GVS_PO_TOKEN_POLICY marks a PO token as required, and there is no token
-            # provider here, so their formats would 403 as well.
-            # android_vr stays as a fallback; tv has the higher client priority (40 vs 10),
-            # so its formats win when both supply the same itag.
-            'extractor_args': {'youtube': {'player_client': ['tv', 'android_vr']}},
+            # There is no PO token provider on this platform, so the client has to be one
+            # YouTube will serve without a token, without account cookies, and without SABR.
+            # On yt-dlp 2026.07.04 that leaves very little:
+            #   web_safari   PO token required for https/dash -> 403
+            #   tv           no token needed, but every format is DRM'd without cookies
+            #   android_vr   no token needed, but YouTube is now enforcing tokens on it
+            #                (yt-dlp#17395), which is what the 403 partway through was
+            #   web_embedded no token, no cookies, embeddable videos only
+            # web_embedded needs the JS player, so the jsc solver is what makes it usable.
+            # The other two stay as fallbacks for videos that are not embeddable.
+            'extractor_args': {'youtube': {'player_client': ['web_embedded', 'tv', 'android_vr']}},
             # YouTube stops serving these URLs after roughly 10 MB in a single request, which
             # surfaces as HTTP 403 partway through an otherwise fast download. Requesting the
             # media in explicit chunks keeps every request under that limit.

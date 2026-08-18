@@ -57,7 +57,7 @@ def main():
         'quiet': True,
         'no_warnings': False,
         'skip_download': True,
-        'extractor_args': {'youtube': {'player_client': ['tv', 'android_vr']}},
+        'extractor_args': {'youtube': {'player_client': ['web_embedded', 'tv', 'android_vr']}},
         'remote_components': ['ejs:github'],
     }
 
