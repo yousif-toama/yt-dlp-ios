@@ -57,6 +57,8 @@ def download_video_with_library(url, output_dir, is_youtube=True):
             print('jsc diagnostic:')
             for line in ashell_jsc.diagnostic_report():
                 print(line)
+        else:
+            print("JS challenge solver ready: a-Shell's jsc.")
 
         ydl_opts = {
             'format': 'bestvideo[height<=?1080][fps<=?60][vcodec!*=av0]+bestaudio/best',
