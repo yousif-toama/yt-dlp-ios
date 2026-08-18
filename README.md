@@ -6,6 +6,19 @@ While this project is packaged for use with a-Shell on iOS, the core Python scri
 
 `yt-dlp` is installed with the `curl-cffi` extra, which enables browser impersonation to avoid being blocked by some sites. This requires a build of `curl-cffi` that runs on iOS, available in a-Shell v2 and later.
 
+## JavaScript runtime
+
+Since `yt-dlp` 2025.11.12, YouTube requires an external JavaScript runtime to solve the n-sig challenges. Without one, `yt-dlp` falls back to a reduced set of formats and the 1080p60 selector above cannot be satisfied.
+
+None of the runtimes `yt-dlp` supports natively work on iOS. Deno, Node and Bun have no iOS builds. QuickJS can be installed with `pkg install qjs`, but it is a WebAssembly command — a-Shell runs wasm on the WKWebView JavaScript engine, so invoking it as a subprocess of Python, which already occupies that thread, deadlocks and hangs forever at "downloading webpage".
+
+Instead, `ashell_jsc.py` registers a-Shell's built-in `jsc` command (Apple's JavaScriptCore) with `yt-dlp` as a challenge solver. It is native, JIT compiled, and needs no installation. The solver scripts come from the `yt-dlp-ejs` package, which is installed alongside `yt-dlp`.
+
+On other platforms `ashell_jsc.py` detects that `jsc` is absent and disables itself, leaving `yt-dlp` to use Deno or whatever else is installed.
+
+> [!NOTE]
+> When a-Shell runs *inside* a Shortcut extension rather than in the app, `jsc` degrades to a minimal, unoptimised JavaScript context that cannot solve the challenges. If you use the Shortcut below, configure it to run a-Shell **in app**.
+
 ## iOS Installation
 
 1.  Download the **[a-Shell](https://apps.apple.com/us/app/a-shell/id1473805438)** app from the App Store.

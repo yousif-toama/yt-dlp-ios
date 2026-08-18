@@ -10,6 +10,12 @@ except ImportError:
     print("Please install it in your Python environment (e.g., 'pip install yt-dlp').")
     yt_dlp = None  # So the script can still be parsed, but download will fail
 
+# --- a-Shell JavaScript runtime ---
+# YouTube needs an external JS runtime to solve its n-sig challenges. Importing this registers
+# a-Shell's built-in `jsc` with yt-dlp; it is inert on every other platform.
+if yt_dlp:
+    import ashell_jsc
+
 
 def get_documents_folder():
     """
@@ -44,6 +50,11 @@ def download_video_with_library(url, output_dir, is_youtube=True):
     output_template = os.path.join(output_dir, '%(title)s.%(ext)s')
 
     if is_youtube:
+        reason = ashell_jsc.unavailable_reason()
+        if reason:
+            print(f'Warning: cannot solve YouTube JS challenges because {reason}.')
+            print('Some formats will be missing and quality may be lower than requested.')
+
         ydl_opts = {
             'format': 'bestvideo[height<=?1080][fps<=?60][vcodec!*=av0]+bestaudio/best',
             'outtmpl': output_template,
@@ -51,6 +62,10 @@ def download_video_with_library(url, output_dir, is_youtube=True):
             'quiet': False,
             'extract_flat': 'discard_in_playlist',
             'final_ext': 'mkv',
+            # Lets yt-dlp fetch solver scripts matching its own version when the installed
+            # yt-dlp-ejs package has drifted out of step. Works with any runtime; only
+            # 'ejs:npm' is Deno/Bun-only.
+            'remote_components': ['ejs:github'],
             'fragment_retries': 10,
             'ignoreerrors': 'only_download',
             'merge_output_format': 'mkv',
@@ -67,6 +82,7 @@ def download_video_with_library(url, output_dir, is_youtube=True):
             'quiet': False,
             'extract_flat': 'discard_in_playlist',
             'final_ext': 'mkv',
+            'remote_components': ['ejs:github'],
             'fragment_retries': 10,
             'ignoreerrors': 'only_download',
             'merge_output_format': 'mkv',

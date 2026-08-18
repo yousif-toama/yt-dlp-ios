@@ -1,1 +1,2 @@
 yt-dlp[curl-cffi]
+yt-dlp-ejs
