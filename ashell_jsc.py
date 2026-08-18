@@ -92,6 +92,30 @@ def _script_dir() -> str | None:
     return _SCRIPT_DIR if os.path.isdir(_SCRIPT_DIR) else None
 
 
+def _run_jsc_raw(program: str, timeout: int = _PROBE_TIMEOUT) -> tuple[str, str, int]:
+    """Run ``program`` exactly as written, returning (stdout, stderr, returncode).
+
+    Used by the diagnostic, which needs to test one output mechanism per run. Anything that
+    goes through ``_run_jsc`` is wrapped identically and so cannot tell the mechanisms apart.
+    """
+    script = tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8', dir=_script_dir())
+    try:
+        script.write(program)
+        script.close()
+        completed = subprocess.run(
+            ['jsc', script.name],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    finally:
+        pathlib.Path(script.name).unlink(missing_ok=True)
+    return completed.stdout or '', completed.stderr or '', completed.returncode
+
+
 def _run_jsc(program: str, timeout: int = _SOLVE_TIMEOUT) -> tuple[str, str, int]:
     """Run ``program`` under a-Shell's jsc, returning (output, stderr, returncode).
 
@@ -209,28 +233,45 @@ if _IMPORT_ERROR is None:
         return 500
 
 
-# a-Shell's jsc behaves differently between a terminal session and a Shortcut run, so when the
-# probe fails, report what each candidate channel actually did rather than only that none worked.
+# a-Shell's jsc behaves differently between a terminal session and a Shortcut run. Each case
+# below is run RAW -- no wrapper -- so exactly one output mechanism is under test at a time,
+# and each writes a marker file where it can, so a result survives stdout being unusable.
+_MARKER = 'ashell_jsc_marker'
+_GLOBALS_EXPR = (
+    '"jsc=" + (typeof jsc) + " println=" + (typeof println) + " print=" + (typeof print)'
+    ' + " console=" + (typeof console) + " process=" + (typeof process)'
+    ' + " globalThis=" + (typeof globalThis)'
+)
 _DIAGNOSTIC_CASES = (
-    ('wrapped console.log', _PROBE_SCRIPT),
-    ('println direct', f'println("{_PROBE_SENTINEL}");\n'),
-    ('typeof jsc', 'console.log(typeof jsc);\n'),
-    ('typeof println', 'console.log(typeof println);\n'),
-    ('typeof globalThis', 'console.log(typeof globalThis);\n'),
-    ('writeFile support', 'console.log(typeof jsc === "undefined" ? "no jsc" : typeof jsc.writeFile);\n'),
+    ('jsc.writeFile', lambda p: f'jsc.writeFile({json.dumps(p)}, "{_MARKER}");'),
+    ('println', lambda p: f'println("{_MARKER}");'),
+    ('print', lambda p: f'print("{_MARKER}\\n");'),
+    ('console.log', lambda p: f'console.log("{_MARKER}");'),
+    ('completion value', lambda p: f'"{_MARKER}";'),
+    ('globals -> writeFile', lambda p: f'try {{ jsc.writeFile({json.dumps(p)}, {_GLOBALS_EXPR}); }} catch (e) {{}}'),
+    ('globals -> println', lambda p: f'try {{ println({_GLOBALS_EXPR}); }} catch (e) {{}}'),
+    ('globals -> completion', lambda p: _GLOBALS_EXPR + ';'),
 )
 
 
 def diagnostic_report() -> list[str]:
-    """Run each candidate output channel and describe what jsc did with it."""
+    """Run each output mechanism on its own and report what came back, and by which route."""
     report = []
-    for label, script in _DIAGNOSTIC_CASES:
+    for label, build in _DIAGNOSTIC_CASES:
+        marker = tempfile.NamedTemporaryFile(mode='w', suffix='.marker', delete=False, dir=_script_dir())
+        marker.close()
+        marker_path = pathlib.Path(marker.name)
         try:
-            output, stderr, returncode = _run_jsc(script, timeout=_PROBE_TIMEOUT)
+            stdout, stderr, returncode = _run_jsc_raw(build(marker.name))
+            written = marker_path.read_text(encoding='utf-8', errors='replace').strip()
         except Exception as exc:  # noqa: BLE001 - the report is the point, not the failure
             report.append(f'  {label}: {type(exc).__name__}: {exc}')
-        else:
-            report.append(f'  {label}: rc={returncode} out={output.strip()[:120]!r} err={stderr.strip()[:120]!r}')
+            continue
+        finally:
+            marker_path.unlink(missing_ok=True)
+        report.append(
+            f'  {label}: rc={returncode} file={written[:90]!r} out={stdout.strip()[:90]!r} err={stderr.strip()[:90]!r}'
+        )
     return report
 
 
