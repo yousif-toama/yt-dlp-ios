@@ -71,6 +71,11 @@ def download_video_with_library(url, output_dir, is_youtube=True):
             # yt-dlp-ejs package has drifted out of step. Works with any runtime; only
             # 'ejs:npm' is Deno/Bun-only.
             'remote_components': ['ejs:github'],
+            # yt-dlp tries android_vr first by default, which needs no JS challenge solving
+            # but whose media URLs YouTube has been rejecting with HTTP 403. Prefer the
+            # client that does solve challenges, and keep android_vr as a fallback. Order is
+            # honoured: _get_requested_clients() builds the list without re-sorting it.
+            'extractor_args': {'youtube': {'player_client': ['web_safari', 'android_vr']}},
             'fragment_retries': 10,
             'ignoreerrors': 'only_download',
             'merge_output_format': 'mkv',
