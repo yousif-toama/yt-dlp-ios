@@ -58,6 +58,7 @@ _SOLVE_TIMEOUT = 600
 
 # The first attempt runs as-is; later ones reload a-Shell's webview and wait for it.
 _PROBE_ATTEMPTS = 3
+_SOLVE_ATTEMPTS = 3
 _RESET_SETTLE_SECONDS = 3
 
 _runtime_probe: bool | None = None
@@ -230,19 +231,45 @@ if _IMPORT_ERROR is None:
             # find a usable solver script.
             return self._available and _probe_runtime()
 
+        def _construct_stdin(self, player: str, preprocessed: bool, requests, /) -> str:
+            program = super()._construct_stdin(player, preprocessed, requests)
+            # yt-dlp asks the solver to hand the whole transformed player back, then discards
+            # it, since _ENABLE_PREPROCESSED_PLAYER_CACHE is False. Here that round trip
+            # crosses a WKWebView bridge, so suppressing it saves megabytes for no loss. The
+            # key appears once unescaped -- inside the embedded player its quotes are escaped,
+            # so this cannot match there -- and if upstream changes shape it simply no-ops.
+            return program.replace('"output_preprocessed": true', '"output_preprocessed": false')
+
         def _run_js_runtime(self, stdin: str, /) -> str:
             self.logger.debug(f'Running a-Shell jsc on a {len(stdin)} byte script')
-            output, stderr, returncode = _run_jsc(stdin)
+            error = None
+            for attempt in range(_SOLVE_ATTEMPTS):
+                if attempt:
+                    # Solving has been seen to come back empty on a later call after an
+                    # earlier one succeeded, with a clean exit and nothing on stderr.
+                    # Reloading the webview clears whatever state it got into.
+                    self.logger.warning(
+                        f'a-Shell jsc returned nothing; reloading its webview and retrying '
+                        f'({attempt}/{_SOLVE_ATTEMPTS - 1})'
+                    )
+                    _reset_runtime()
 
-            # yt-dlp's own QuickJS provider also treats any stderr output as a failure. jsc is
-            # noisier than that, so only the exit status is fatal here.
-            if returncode:
-                message = f'Error running a-Shell jsc (returncode: {returncode})'
-                if stderr:
-                    message = f'{message}: {stderr.strip()}'
-                raise JsChallengeProviderError(message)
+                output, stderr, returncode = _run_jsc(stdin)
+                if returncode:
+                    # yt-dlp's own QuickJS provider also treats any stderr output as a
+                    # failure. jsc is noisier than that, so only the exit status counts.
+                    message = f'Error running a-Shell jsc (returncode: {returncode})'
+                    if stderr:
+                        message = f'{message}: {stderr.strip()}'
+                    error = JsChallengeProviderError(message)
+                    continue
 
-            return self._extract_json(output, stderr)
+                try:
+                    return self._extract_json(output, stderr)
+                except JsChallengeProviderError as exc:
+                    error = exc
+
+            raise error
 
         @staticmethod
         def _extract_json(output: str, stderr: str, /) -> str:
