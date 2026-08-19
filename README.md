@@ -4,6 +4,47 @@ A script to download videos using `yt-dlp` on iOS via the [a-Shell app](https://
 
 While this project is packaged for use with a-Shell on iOS, the core Python script (`main.py`) is cross-platform and will run on any system where Python and [yt-dlp](https://github.com/yt-dlp/yt-dlp) are supported. The script is configured to download the best available format (up to 1080p, 60fps) and save it as an `.mkv` file in your `Documents` folder.
 
+`yt-dlp` is installed with the `curl-cffi` extra, which enables browser impersonation to avoid being blocked by some sites. This requires a build of `curl-cffi` that runs on iOS, available in a-Shell v2 and later.
+
+## JavaScript runtime
+
+Since `yt-dlp` 2025.11.12, YouTube requires an external JavaScript runtime to solve the n-sig challenges. Without one, `yt-dlp` falls back to a reduced set of formats and the 1080p60 selector above cannot be satisfied.
+
+None of the runtimes `yt-dlp` supports natively work on iOS. Deno, Node and Bun have no iOS builds. QuickJS can be installed with `pkg install qjs`, but it is a WebAssembly command — a-Shell runs wasm on the WKWebView JavaScript engine, so invoking it as a subprocess of Python, which already occupies that thread, deadlocks and hangs forever at "downloading webpage".
+
+Instead, `ashell_jsc.py` registers a-Shell's built-in `jsc` command (Apple's JavaScriptCore) with `yt-dlp` as a challenge solver. It is native, JIT compiled, and needs no installation. The solver scripts come from the `yt-dlp-ejs` package, which is installed alongside `yt-dlp`.
+
+On other platforms `ashell_jsc.py` detects that `jsc` is absent and disables itself, leaving `yt-dlp` to use Deno or whatever else is installed.
+
+`jsc` runs the script through `wasmWebView.evaluateJavaScript` (see `SceneDelegate.swift:executeJavascript`). Which routes out of the JS engine exist depends on what page that webview has loaded, and none can be assumed:
+
+| Page loaded | Available routes |
+| --- | --- |
+| a-Shell's `wasm.html` | `jsc` file API, `println()`, and `console.log` (rebound to `println` at `wasm.html:141`) |
+| anything else | only the script's completion value |
+
+So `ashell_jsc.py` wraps the solver program to collect its output and then write it to a file, pass it to `println()`, *and* return it as the completion value. `evaluateJavaScript` rejects an `undefined` completion value with "a result of an unsupported type", which is why simply logging is not enough.
+
+The wrapper is a function rather than a prelude because `wasm.html` declares `const jsc` while the solver bundle declares `var jsc` at top level; unscoped, that is a redeclaration `SyntaxError`.
+
+yt-dlp also asks the solver to return the entire transformed player and then discards it. That is suppressed here, cutting roughly 4 MB per solve off the round trip across the webview bridge.
+
+## PO tokens
+
+Solving the JS challenges is not enough on its own. YouTube attests its web clients with BotGuard, an obfuscated JavaScript VM whose output is a proof-of-origin token, and refuses the media URLs with HTTP 403 without one. `yt-dlp` cannot generate these itself and expects an external provider; every existing provider needs Node or a headless browser.
+
+BotGuard needs a real browser, which is exactly what `jsc` runs in. `ashell_pot.py` drives [`bgutils-js`](https://github.com/LuanRT/BgUtils) inside a-Shell's webview and registers the result with `yt-dlp` as a PO Token Provider. The page it evaluates against is served over HTTPS from `localhost`, so:
+
+- `document`, `HTMLElement`, `getComputedStyle`, `requestAnimationFrame` and `matchMedia` are all genuine. The Node-based providers shim these with `jsdom`; here they are real.
+- `window.isSecureContext` is true and `crypto.subtle` is present.
+- `fetch` reaches Google's attestation API directly — it answers a cross-origin request from `localhost` — so the whole exchange happens in JavaScript, with Python only collecting the token.
+
+`evaluateJavaScript` returns as soon as the top-level statements finish and does not await promises, so the token cannot come back through `jsc` itself. The driver writes it to a file and `ashell_pot.py` polls for it; the webview keeps running timers and honours the `jsc` file API after the command has exited.
+
+That webview also outlives the Python process, so a minted session is parked on `globalThis` and reused. Only the first token after a reset pays for a BotGuard run.
+
+`bgutils.bundle.js` is a vendored build of `bgutils-js`, since a-Shell has no npm. The header comment carries the pinned version and the command to rebuild it.
+
 ## iOS Installation
 
 1.  Download the **[a-Shell](https://apps.apple.com/us/app/a-shell/id1473805438)** app from the App Store.

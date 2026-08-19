@@ -10,6 +10,14 @@ except ImportError:
     print("Please install it in your Python environment (e.g., 'pip install yt-dlp').")
     yt_dlp = None  # So the script can still be parsed, but download will fail
 
+# --- a-Shell JavaScript runtime ---
+# YouTube needs an external JS runtime to solve its n-sig challenges, and a PO token to serve
+# the media URLs to a web client at all. Importing these registers a-Shell's built-in `jsc` as
+# the runtime for both; they are inert on every other platform.
+if yt_dlp:
+    import ashell_jsc
+    import ashell_pot
+
 
 def get_documents_folder():
     """
@@ -44,6 +52,23 @@ def download_video_with_library(url, output_dir, is_youtube=True):
     output_template = os.path.join(output_dir, '%(title)s.%(ext)s')
 
     if is_youtube:
+        reason = ashell_jsc.unavailable_reason()
+        if reason:
+            print(f'Warning: cannot solve YouTube JS challenges because {reason}.')
+            print('Some formats will be missing and quality may be lower than requested.')
+            print('jsc diagnostic:')
+            for line in ashell_jsc.diagnostic_report():
+                print(line)
+        else:
+            print("JS challenge solver ready: a-Shell's jsc.")
+
+        pot_reason = ashell_pot.unavailable_reason()
+        if pot_reason:
+            print(f'Warning: cannot generate PO tokens because {pot_reason}.')
+            print('YouTube may refuse the media URLs with HTTP 403.')
+        else:
+            print("PO token provider ready: BotGuard under a-Shell's jsc.")
+
         ydl_opts = {
             'format': 'bestvideo[height<=?1080][fps<=?60][vcodec!*=av0]+bestaudio/best',
             'outtmpl': output_template,
@@ -51,6 +76,19 @@ def download_video_with_library(url, output_dir, is_youtube=True):
             'quiet': False,
             'extract_flat': 'discard_in_playlist',
             'final_ext': 'mkv',
+            # Lets yt-dlp fetch solver scripts matching its own version when the installed
+            # yt-dlp-ejs package has drifted out of step. Works with any runtime; only
+            # 'ejs:npm' is Deno/Bun-only.
+            'remote_components': ['ejs:github'],
+            # web_safari carries the full format ladder and needs a PO token, which
+            # ashell_pot now supplies. The other two need no token and cover the cases it
+            # cannot: web_embedded when BotGuard fails, android_vr when there is no JS
+            # runtime at all. `tv` is deliberately absent -- without account cookies every
+            # format it returns is DRM'd.
+            'extractor_args': {'youtube': {'player_client': ['web_safari', 'web_embedded', 'android_vr']}},
+            # Chunked requests keep a stall or a mid-download rejection to one 10 MB retry
+            # rather than the whole file.
+            'http_chunk_size': 10485760,
             'fragment_retries': 10,
             'ignoreerrors': 'only_download',
             'merge_output_format': 'mkv',
@@ -67,6 +105,10 @@ def download_video_with_library(url, output_dir, is_youtube=True):
             'quiet': False,
             'extract_flat': 'discard_in_playlist',
             'final_ext': 'mkv',
+            'remote_components': ['ejs:github'],
+            # Chunked requests keep a stall or a mid-download rejection to one 10 MB retry
+            # rather than the whole file.
+            'http_chunk_size': 10485760,
             'fragment_retries': 10,
             'ignoreerrors': 'only_download',
             'merge_output_format': 'mkv',
