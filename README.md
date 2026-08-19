@@ -29,6 +29,22 @@ The wrapper is a function rather than a prelude because `wasm.html` declares `co
 
 yt-dlp also asks the solver to return the entire transformed player and then discards it. That is suppressed here, cutting roughly 4 MB per solve off the round trip across the webview bridge.
 
+## PO tokens
+
+Solving the JS challenges is not enough on its own. YouTube attests its web clients with BotGuard, an obfuscated JavaScript VM whose output is a proof-of-origin token, and refuses the media URLs with HTTP 403 without one. `yt-dlp` cannot generate these itself and expects an external provider; every existing provider needs Node or a headless browser.
+
+BotGuard needs a real browser, which is exactly what `jsc` runs in. `ashell_pot.py` drives [`bgutils-js`](https://github.com/LuanRT/BgUtils) inside a-Shell's webview and registers the result with `yt-dlp` as a PO Token Provider. The page it evaluates against is served over HTTPS from `localhost`, so:
+
+- `document`, `HTMLElement`, `getComputedStyle`, `requestAnimationFrame` and `matchMedia` are all genuine. The Node-based providers shim these with `jsdom`; here they are real.
+- `window.isSecureContext` is true and `crypto.subtle` is present.
+- `fetch` reaches Google's attestation API directly — it answers a cross-origin request from `localhost` — so the whole exchange happens in JavaScript, with Python only collecting the token.
+
+`evaluateJavaScript` returns as soon as the top-level statements finish and does not await promises, so the token cannot come back through `jsc` itself. The driver writes it to a file and `ashell_pot.py` polls for it; the webview keeps running timers and honours the `jsc` file API after the command has exited.
+
+That webview also outlives the Python process, so a minted session is parked on `globalThis` and reused. Only the first token after a reset pays for a BotGuard run.
+
+`bgutils.bundle.js` is a vendored build of `bgutils-js`, since a-Shell has no npm. The header comment carries the pinned version and the command to rebuild it.
+
 ## iOS Installation
 
 1.  Download the **[a-Shell](https://apps.apple.com/us/app/a-shell/id1473805438)** app from the App Store.
