@@ -1,10 +1,8 @@
 #!/usr/bin/env dash
-# Set -e is recommended for robust shell scripting
-set -e
+set -eu
 
-# Get the script's absolute directory using $0
 DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$DIR"
 
-# Install required Python packages
-pip install --user --upgrade -r requirements.txt
+# See yt-dl.sh for why the version check is disabled.
+pip install --user --upgrade --disable-pip-version-check -r requirements.txt

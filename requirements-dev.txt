@@ -1,0 +1,7 @@
+# Everything needed to run the checks in TESTING.md on a desktop. Runtime dependencies stay
+# unpinned in requirements.txt, because YouTube breaks old yt-dlp releases; the tools here are
+# pinned so local runs and CI agree.
+-r requirements.txt
+pytest==9.1.1
+ruff==0.16.10
+ty==0.0.84
