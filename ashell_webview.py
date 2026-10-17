@@ -36,6 +36,7 @@ _PROBE_TIMEOUT = 10
 _PROBE_INTERVAL = 1
 
 _READY_SENTINEL = 'ashell_webview_ready'
+_STALE_SENTINEL = 'ashell_webview_stale'
 # Set on the old page before a reset. A probe can be evaluated before the reload has replaced
 # that page, and must not mistake it for the fresh one.
 _STALE_FLAG = '__ashell_webview_stale'
@@ -82,14 +83,19 @@ def is_dead() -> bool:
     return _dead
 
 
-def _page_answers() -> bool:
-    """Whether a freshly loaded page evaluates scripts, by any output route it offers."""
+def _page_state() -> str | None:
+    """Probe the page, by any output route it offers.
+
+    Returns:
+        ``'fresh'`` when a newly loaded page evaluates scripts, ``'stale'`` when the page from
+        before the reset still does, or None when no page answers.
+    """
     marker = tempfile.NamedTemporaryFile(mode='w', suffix='.ready', delete=False, dir=script_dir())
     marker.close()
     marker_path = pathlib.Path(marker.name)
     program = (
         '(function () {\n'
-        f"  if (globalThis.{_STALE_FLAG}) return 'stale';\n"
+        f'  if (globalThis.{_STALE_FLAG}) return {json.dumps(_STALE_SENTINEL)};\n'
         f'  try {{ jsc.writeFile({json.dumps(marker.name)}, {json.dumps(_READY_SENTINEL)}); }} catch (e) {{}}\n'
         f'  return {json.dumps(_READY_SENTINEL)};\n'
         '})();\n'
@@ -97,11 +103,16 @@ def _page_answers() -> bool:
     try:
         completed = run_script(program, _PROBE_TIMEOUT)
         written = marker_path.read_text(encoding='utf-8', errors='replace')
-    except Exception:  # noqa: BLE001 - a page that cannot be probed is a page that is not ready
-        return False
+    except Exception:  # noqa: BLE001 - a page that cannot be probed is a page that does not answer
+        return None
     finally:
         marker_path.unlink(missing_ok=True)
-    return _READY_SENTINEL in written or _READY_SENTINEL in (completed.stdout or '')
+    stdout = completed.stdout or ''
+    if _READY_SENTINEL in written or _READY_SENTINEL in stdout:
+        return 'fresh'
+    if _STALE_SENTINEL in stdout:
+        return 'stale'
+    return None
 
 
 def reset() -> bool:
@@ -111,7 +122,9 @@ def reset() -> bool:
     is only worth doing once a call has already failed.
 
     Returns:
-        Whether the page came back. When it did not, the page is recorded as dead.
+        Whether a freshly loaded page came back. When no page answers at all, the page is
+        also recorded as dead. A page that still answers but was not replaced is not: it
+        can still serve whatever does not need the reload.
     """
     global _dead
     _notice('jsc failed; reloading its webview')
@@ -122,13 +135,18 @@ def reset() -> bool:
             pass
 
     started = time.monotonic()
+    state = None
     while time.monotonic() - started < _READY_TIMEOUT:
         time.sleep(_PROBE_INTERVAL)
-        if _page_answers():
+        state = _page_state()
+        if state == 'fresh':
             _notice(f'webview answered again after {time.monotonic() - started:.1f}s')
             return True
-    _dead = True
-    _notice(f'webview did not answer within {_READY_TIMEOUT}s; jsc is off for the rest of this run')
+    if state == 'stale':
+        _notice(f'webview still answers but did not reload within {_READY_TIMEOUT}s')
+    else:
+        _dead = True
+        _notice(f'webview did not answer within {_READY_TIMEOUT}s; jsc is off for the rest of this run')
     return False
 
 
