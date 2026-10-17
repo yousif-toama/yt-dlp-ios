@@ -217,9 +217,8 @@ if _IMPORT_ERROR is None:
             error = None
             for attempt in range(_SOLVE_ATTEMPTS):
                 if attempt:
-                    # Solving has been seen to come back empty on a later call after an
-                    # earlier one succeeded, with a clean exit and nothing on stderr.
-                    # Reloading the webview clears whatever state it got into.
+                    # A solve fails when the page has left wasm.html or stopped answering;
+                    # a reset sends it back or reloads it.
                     self.logger.warning(f'a-Shell jsc failed ({error}); retrying ({attempt}/{_SOLVE_ATTEMPTS - 1})')
                     if not ashell_webview.reset():
                         error = JsChallengeProviderError(f'{error}; the webview did not come back after a reset')

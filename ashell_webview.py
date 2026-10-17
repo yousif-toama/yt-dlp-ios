@@ -79,7 +79,7 @@ def run_script(program: str, timeout: int) -> subprocess.CompletedProcess[str]:
 
 
 def is_dead() -> bool:
-    """Whether a reset has already failed to bring the page back during this run."""
+    """Whether the page stopped answering scripts at all, even after a reset, during this run."""
     return _dead
 
 
