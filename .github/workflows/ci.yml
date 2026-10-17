@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: '3.13'
+          activate-environment: true
+          enable-cache: false
+
+      # The fake webview in tests/fake_webview runs on Node.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      # tests/test_main.py generates and remuxes a clip; without ffmpeg it would skip.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ffmpeg
+
+      # yt-dlp is deliberately unpinned, as on the device, which upgrades it on every run: a
+      # failure after an upstream release is the early warning this job exists for.
+      - name: Install dependencies
+        run: uv pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check . && ruff format --check .
+
+      - name: ty
+        run: ty check
+
+      - name: Shellcheck
+        run: shellcheck --shell=dash install.sh yt-dl.sh
+
+      - name: Pytest
+        run: pytest -q -rs
