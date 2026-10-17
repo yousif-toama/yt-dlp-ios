@@ -25,7 +25,7 @@ On other platforms `ashell_jsc.py` detects that `jsc` is absent and disables its
 
 So `ashell_jsc.py` wraps the solver program to collect its output and then write it to a file, pass it to `println()`, *and* return it as the completion value. `evaluateJavaScript` rejects an `undefined` completion value with "a result of an unsupported type", which is why simply logging is not enough.
 
-The wrapper is a function rather than a prelude because `wasm.html` declares `const jsc` while the solver bundle declares `var jsc` at top level; unscoped, that is a redeclaration `SyntaxError`.
+The program itself runs in a throwaway sandboxed iframe. yt-dlp's solver fakes a browser environment for runtimes that have none, including `globalThis.location = new URL("https://www.youtube.com/watch?v=yt-dlp-wins")`. In a real page that assignment navigates, so run directly it sent a-Shell's webview to YouTube, taking `wasm.html` and its `jsc` file API with it: PO tokens then failed until a-Shell next came to the foreground and reloaded the page. In the iframe it navigates only the iframe, which is removed straight after. The iframe's own global scope also keeps the solver bundle's top-level `var jsc` clear of the `const jsc` that `wasm.html` declares.
 
 yt-dlp also asks the solver to return the entire transformed player and then discards it. That is suppressed here, cutting roughly 4 MB per solve off the round trip across the webview bridge.
 
@@ -44,6 +44,12 @@ BotGuard needs a real browser, which is exactly what `jsc` runs in. `ashell_pot.
 That webview also outlives the Python process, so a minted session is parked on `globalThis` and reused. Only the first token after a reset pays for a BotGuard run.
 
 `bgutils.bundle.js` is a vendored build of `bgutils-js`, since a-Shell has no npm. The header comment carries the pinned version and the command to rebuild it.
+
+## Fallback when the webview fails
+
+Both providers depend on one WKWebView page. It can navigate away from `wasm.html`, and iOS can kill its web content process, which a-Shell does not reload on its own. `jsc --reset` reloads whatever URL the page is on, and returns before it has loaded. So `ashell_webview.py` first sends a page that has left back to `wasm.html` (otherwise it runs `jsc --reset`), then probes until the page answers. If it does not answer within 30 seconds, or if a provider has used up its retries, that provider stays off for the rest of the run. yt-dlp asks for a PO token once per format and only remembers one that succeeded, so without this a broken page would be retried, and waited on, for every format of every video.
+
+The client list ends with `visionos`, which needs neither a PO token nor a JS runtime and still offers formats up to 1080p60 and beyond. yt-dlp keeps the first client's copy of each format, so `visionos` only fills in what `web_safari` and `web_embedded` could not provide. It cannot play "made for kids" videos.
 
 ## iOS Installation
 

@@ -2,8 +2,9 @@
 
 YouTube attests its web clients with BotGuard, an obfuscated JavaScript VM whose output is a
 proof-of-origin token. Without one, ``web``/``web_safari`` return HTTP 403 on the media URLs,
-which leaves only clients that need no token -- and those have run out: ``tv`` serves nothing
-but DRM without cookies, and ``android_vr`` is now being enforced too (yt-dlp#17395).
+which leaves only clients that need no token. YouTube keeps retiring those: ``tv`` serves
+nothing but DRM without cookies, and ``android_vr`` is now enforced too (yt-dlp#17395). So
+``visionos``, the one still standing, is the fallback rather than the plan.
 
 yt-dlp cannot generate these itself; it expects an external provider. Every existing provider
 needs Node or a headless browser, neither of which exists on iOS. But BotGuard wants a real
@@ -29,12 +30,12 @@ Import this module before constructing ``yt_dlp.YoutubeDL``; registration is glo
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import shutil
-import subprocess
 import tempfile
 import time
+
+import ashell_webview
 
 # The PO token provider framework is public API, but it only exists in yt-dlp 2025.05.22 and
 # later, and yt-dl.sh upgrades yt-dlp on every run. Failing soft costs the token, not the run.
@@ -59,9 +60,6 @@ _HERE = pathlib.Path(__file__).resolve().parent
 _BUNDLE_PATH = _HERE / 'bgutils.bundle.js'
 _DRIVER_PATH = _HERE / 'ashell_pot.js'
 
-# a-Shell can only read and write ~/Documents, ~/Library and ~/tmp.
-_SCRIPT_DIR = os.path.expanduser('~/Documents')
-
 # The public request key YouTube's own web player uses for its BotGuard challenge.
 _REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo'
 
@@ -73,78 +71,51 @@ _LAUNCH_TIMEOUT = 60
 _RESULT_TIMEOUT = 120
 _POLL_INTERVAL = 0.25
 
+# The driver writes its start marker before any asynchronous work, so on a live page it
+# appears almost at once. Its absence means the script never ran.
+_START_TIMEOUT = 10
+
 _ATTEMPTS = 2
-_RESET_SETTLE_SECONDS = 3
 
 _runtime_probe: bool | None = None
 _probe_detail: str | None = None
+# Set once minting has failed every attempt. yt-dlp requests a token for each format and only
+# remembers one that succeeded, so without this a broken BotGuard is retried per format.
+_gave_up = False
 
 
-def _script_dir() -> str | None:
-    """Return the directory to write temporary files into, or None for the system default."""
-    return _SCRIPT_DIR if os.path.isdir(_SCRIPT_DIR) else None
+def _wait_for(path: pathlib.Path, timeout: float, complete) -> str | None:
+    """Poll for ``path`` until ``complete`` accepts its contents, or return None on timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            content = path.read_text(encoding='utf-8', errors='replace')
+            if complete(content):
+                return content
+        time.sleep(_POLL_INTERVAL)
+    return None
 
 
-def _reset_runtime() -> None:
-    """Ask a-Shell to reload the webview jsc runs against, and give it time to load.
-
-    This discards any parked BotGuard session, so it is only worth doing when a call has
-    already failed.
-    """
-    try:
-        subprocess.run(
-            ['jsc', '--reset'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=_LAUNCH_TIMEOUT,
-            check=False,
-        )
-    except Exception:  # noqa: BLE001 - best effort recovery
-        pass
-    time.sleep(_RESET_SETTLE_SECONDS)
-
-
-def _launch(program: str, result_path: str, timeout: int) -> str:
-    """Run ``program`` under jsc and wait for it to write ``result_path``.
+def _launch(program: str, workdir: pathlib.Path, timeout: int, started: bool) -> str:
+    """Run ``program`` under jsc and wait for it to write ``result.json`` into ``workdir``.
 
     Returns the file's contents. ``jsc`` exits long before the program has finished, because
     ``evaluateJavaScript`` does not await the promise chain the driver starts -- the webview
     keeps running it afterwards. So the exit status says nothing about the outcome and the
-    result file is the only signal that matters.
-
-    Deliberately plain ``subprocess.run`` rather than ``yt_dlp.utils.Popen``: that wrapper
-    passes an explicit ``env=os.environ.copy()``, and ``jsc`` is an ios_system builtin resolved
-    through a-Shell's own command dictionary rather than a file on PATH.
+    result file is the only signal that matters. With ``started``, the program must also
+    write a ``started`` marker, and its absence fails the run without waiting for a result.
     """
-    script = tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8', dir=_script_dir())
-    try:
-        script.write(program)
-        script.close()
-        subprocess.run(
-            ['jsc', script.name],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=_LAUNCH_TIMEOUT,
-            check=False,
-        )
+    completed = ashell_webview.run_script(program, _LAUNCH_TIMEOUT)
+    stderr = (completed.stderr or '').strip()
+    detail = f': {stderr[:300]}' if stderr else ''
 
-        result = pathlib.Path(result_path)
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if result.exists():
-                content = result.read_text(encoding='utf-8', errors='replace')
-                # The write is not atomic, so a poll can land on a partial file.
-                if content.strip().endswith('}'):
-                    return content
-            time.sleep(_POLL_INTERVAL)
-    finally:
-        pathlib.Path(script.name).unlink(missing_ok=True)
-
-    raise TimeoutError(f'a-Shell jsc wrote no result within {timeout}s')
+    if started and _wait_for(workdir / 'started', _START_TIMEOUT, bool) is None:
+        raise RuntimeError(f'a-Shell jsc did not run the script{detail}')
+    # The write is not atomic, so a poll can land on a partial file.
+    content = _wait_for(workdir / 'result.json', timeout, lambda text: text.strip().endswith('}'))
+    if content is None:
+        raise TimeoutError(f'a-Shell jsc wrote no result within {timeout}s{detail}')
+    return content
 
 
 def _build_program(request_body: dict) -> str:
@@ -158,38 +129,47 @@ def _build_program(request_body: dict) -> str:
     )
 
 
-def _run_in_workdir(build_body, timeout: int) -> str:
+def _run_in_workdir(build_body, timeout: int, started: bool) -> str:
     """Run a program in a scratch directory, cleaning it up afterwards.
 
-    The result file must not exist when jsc starts, since its appearance is what signals
-    completion, so it gets a private directory rather than a pre-created temporary file.
+    The files the program writes must not exist when jsc starts, since their appearance is
+    the signal, so they get a private directory rather than pre-created temporary files.
+    ``build_body`` receives the paths of the result file and the start marker.
     """
-    workdir = tempfile.mkdtemp(prefix='ashell_pot_', dir=_script_dir())
+    workdir = pathlib.Path(tempfile.mkdtemp(prefix='ashell_pot_', dir=ashell_webview.script_dir()))
     try:
-        result_path = os.path.join(workdir, 'result.json')
-        return _launch(build_body(result_path), result_path, timeout)
+        program = build_body(str(workdir / 'result.json'), str(workdir / 'started'))
+        return _launch(program, workdir, timeout, started)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
 def mint(content_binding: str) -> tuple[str, int | None]:
-    """Return a PO token for ``content_binding``, and when it expires."""
+    """Return a PO token for ``content_binding``, and when it expires.
 
-    def build(result_path: str) -> str:
+    Raises:
+        PoTokenProviderError: Every attempt failed. The provider then stays unavailable for
+            the rest of the run.
+    """
+    global _gave_up
+
+    def build(result_path: str, started_path: str) -> str:
         return _build_program(
             {
                 'request_key': _REQUEST_KEY,
                 'content_binding': content_binding,
                 'result_path': result_path,
+                'started_path': started_path,
             }
         )
 
     error: Exception | None = None
     for attempt in range(_ATTEMPTS):
-        if attempt:
-            _reset_runtime()
+        if attempt and not ashell_webview.reset():
+            error = RuntimeError(f'{error}; the webview did not come back after a reset')
+            break
         try:
-            payload = json.loads(_run_in_workdir(build, _RESULT_TIMEOUT))
+            payload = json.loads(_run_in_workdir(build, _RESULT_TIMEOUT, started=True))
         except Exception as exc:  # noqa: BLE001 - retry once, then report whatever happened
             error = exc
             continue
@@ -197,7 +177,10 @@ def mint(content_binding: str) -> tuple[str, int | None]:
             return payload['po_token'], payload.get('expires_at')
         error = RuntimeError(payload.get('error') or 'BotGuard failed without a message')
 
-    raise PoTokenProviderError(f'Could not mint a PO token with a-Shell jsc: {error}')
+    _gave_up = True
+    raise PoTokenProviderError(
+        f'Could not mint a PO token with a-Shell jsc, so it is off for the rest of this run: {error}'
+    )
 
 
 def _probe_runtime() -> bool:
@@ -219,14 +202,24 @@ def _probe_runtime() -> bool:
         _probe_detail = f'{_BUNDLE_PATH.name} or {_DRIVER_PATH.name} is missing'
         return _runtime_probe
 
-    def build(result_path: str) -> str:
+    def build(result_path: str, started_path: str) -> str:
         return f'jsc.writeFile({json.dumps(result_path)}, {json.dumps(f"{{{_PROBE_SENTINEL}}}")});'
 
-    try:
-        _runtime_probe = _PROBE_SENTINEL in _run_in_workdir(build, timeout=10)
-    except Exception as exc:  # noqa: BLE001 - any failure here just means no usable jsc
-        _runtime_probe = False
-        _probe_detail = f'{type(exc).__name__}: {exc}'
+    _runtime_probe = False
+    for attempt in range(_ATTEMPTS):
+        # A page that has left wasm.html still runs scripts, so the solver's own probe passes
+        # and never resets it, but it has no file bridge. A reset sends it back.
+        if attempt and not ashell_webview.reset():
+            break
+        try:
+            _runtime_probe = _PROBE_SENTINEL in _run_in_workdir(build, timeout=10, started=False)
+        except FileNotFoundError as exc:  # no jsc at all: this is not a-Shell
+            _probe_detail = f'{type(exc).__name__}: {exc}'
+            break
+        except Exception as exc:  # noqa: BLE001 - jsc ran but the file bridge did not answer
+            _probe_detail = f'{type(exc).__name__}: {exc}'
+        if _runtime_probe:
+            break
     return _runtime_probe
 
 
@@ -246,7 +239,7 @@ if _IMPORT_ERROR is None:
         _SUPPORTED_EXTERNAL_REQUEST_FEATURES = ()
 
         def is_available(self, /) -> bool:
-            return _probe_runtime()
+            return not _gave_up and not ashell_webview.is_dead() and _probe_runtime()
 
         def _real_request_pot(self, request: PoTokenRequest, /) -> PoTokenResponse:
             content_binding, binding_type = get_webpo_content_binding(request)

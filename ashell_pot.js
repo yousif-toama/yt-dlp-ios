@@ -7,6 +7,10 @@
 // The webview keeps running timers and honours the jsc file bridge after `jsc` has exited,
 // so the asynchronous tail of this script still completes.
 //
+// Before starting that tail, the driver writes a marker file. Without it, a page that never
+// ran the script -- dead, or still loading -- looks the same as a slow BotGuard run until the
+// caller's full timeout has passed.
+//
 // The page also outlives the Python process. A minted session is parked on globalThis and
 // reused, which skips the expensive BotGuard run on all but the first call.
 
@@ -92,6 +96,8 @@
       return { ok: true, po_token: token, expires_at: session.expires_at };
     });
   }
+
+  jsc.writeFile(request.started_path, 'started');
 
   currentSession().then(mint).catch(function (error) {
     // A parked session can be rejected by the server long before its stated TTL. Drop it and
