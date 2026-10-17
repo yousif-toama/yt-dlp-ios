@@ -55,7 +55,7 @@ def download_video_with_library(url, output_dir, is_youtube=True):
         reason = ashell_jsc.unavailable_reason()
         if reason:
             print(f'Warning: cannot solve YouTube JS challenges because {reason}.')
-            print('Some formats will be missing and quality may be lower than requested.')
+            print('Falling back to the visionos client, which cannot download "made for kids" videos.')
             print('jsc diagnostic:')
             for line in ashell_jsc.diagnostic_report():
                 print(line)
@@ -65,7 +65,7 @@ def download_video_with_library(url, output_dir, is_youtube=True):
         pot_reason = ashell_pot.unavailable_reason()
         if pot_reason:
             print(f'Warning: cannot generate PO tokens because {pot_reason}.')
-            print('YouTube may refuse the media URLs with HTTP 403.')
+            print('Falling back to the web_embedded and visionos clients, which need none.')
         else:
             print("PO token provider ready: BotGuard under a-Shell's jsc.")
 
@@ -81,11 +81,13 @@ def download_video_with_library(url, output_dir, is_youtube=True):
             # 'ejs:npm' is Deno/Bun-only.
             'remote_components': ['ejs:github'],
             # web_safari carries the full format ladder and needs a PO token, which
-            # ashell_pot now supplies. The other two need no token and cover the cases it
-            # cannot: web_embedded when BotGuard fails, android_vr when there is no JS
-            # runtime at all. `tv` is deliberately absent -- without account cookies every
-            # format it returns is DRM'd.
-            'extractor_args': {'youtube': {'player_client': ['web_safari', 'web_embedded', 'android_vr']}},
+            # ashell_pot supplies. The other two need no token and cover the cases it cannot:
+            # web_embedded when BotGuard fails, visionos when the jsc webview fails as well --
+            # it needs neither a token nor a JS runtime, but cannot play "made for kids"
+            # videos. yt-dlp keeps the first client's copy of each format, so visionos only
+            # fills in what the others could not provide. `tv` is deliberately absent --
+            # without account cookies every format it returns is DRM'd.
+            'extractor_args': {'youtube': {'player_client': ['web_safari', 'web_embedded', 'visionos']}},
             # Chunked requests keep a stall or a mid-download rejection to one 10 MB retry
             # rather than the whole file.
             'http_chunk_size': 10485760,

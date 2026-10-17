@@ -81,7 +81,7 @@ def main():
         'quiet': True,
         'no_warnings': False,
         'skip_download': True,
-        'extractor_args': {'youtube': {'player_client': ['web_safari', 'web_embedded', 'android_vr']}},
+        'extractor_args': {'youtube': {'player_client': ['web_safari', 'web_embedded', 'visionos']}},
         'remote_components': ['ejs:github'],
     }
 
