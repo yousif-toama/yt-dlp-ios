@@ -64,6 +64,7 @@ _DRIVER_PATH = _HERE / 'ashell_pot.js'
 _REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo'
 
 _PROBE_SENTINEL = 'ashell_pot_ok'
+_PROBE_TIMEOUT = 10
 _LAUNCH_TIMEOUT = 60
 
 # A cold start is a network round trip plus a BotGuard VM run; on a warm page it is just a
@@ -196,6 +197,11 @@ def _probe_runtime() -> bool:
         return False
     if _runtime_probe is not None:
         return _runtime_probe
+    if ashell_webview.is_dead():
+        # The other provider already waited out a reset that never answered.
+        _runtime_probe = False
+        _probe_detail = 'the webview stopped answering earlier in this run'
+        return _runtime_probe
 
     if not (_BUNDLE_PATH.exists() and _DRIVER_PATH.exists()):
         _runtime_probe = False
@@ -212,7 +218,7 @@ def _probe_runtime() -> bool:
         if attempt and not ashell_webview.reset():
             break
         try:
-            _runtime_probe = _PROBE_SENTINEL in _run_in_workdir(build, timeout=10, started=False)
+            _runtime_probe = _PROBE_SENTINEL in _run_in_workdir(build, _PROBE_TIMEOUT, started=False)
         except FileNotFoundError as exc:  # no jsc at all: this is not a-Shell
             _probe_detail = f'{type(exc).__name__}: {exc}'
             break
@@ -241,9 +247,9 @@ if _IMPORT_ERROR is None:
         def is_available(self, /) -> bool:
             return not _gave_up and not ashell_webview.is_dead() and _probe_runtime()
 
-        def _real_request_pot(self, request: PoTokenRequest, /) -> PoTokenResponse:
+        def _real_request_pot(self, request: PoTokenRequest) -> PoTokenResponse:
             content_binding, binding_type = get_webpo_content_binding(request)
-            if not content_binding:
+            if not content_binding or binding_type is None:
                 raise PoTokenProviderRejectedRequest(
                     f'No content binding available for context {request.context.value}'
                 )
@@ -258,11 +264,6 @@ if _IMPORT_ERROR is None:
         # Above nothing in particular; this is the only provider that can run here. Kept low
         # so that a real bgutil server, if one is ever configured, wins.
         return 100
-
-
-def is_available() -> bool:
-    """Whether the provider is registered and can actually run."""
-    return _IMPORT_ERROR is None and _probe_runtime()
 
 
 def unavailable_reason() -> str | None:
