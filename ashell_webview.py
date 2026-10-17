@@ -18,6 +18,7 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -108,6 +109,7 @@ def reset() -> bool:
         Whether the page came back. When it did not, the page is recorded as dead.
     """
     global _dead
+    _notice('jsc failed; reloading its webview')
     try:
         run_script(f'globalThis.{_STALE_FLAG} = true; "ok";', _PROBE_TIMEOUT)
     except Exception:  # noqa: BLE001 - a page too broken to flag is about to be reloaded anyway
@@ -117,10 +119,17 @@ def reset() -> bool:
     except Exception:  # noqa: BLE001 - the probes below decide whether the reset worked
         pass
 
-    deadline = time.monotonic() + _READY_TIMEOUT
-    while time.monotonic() < deadline:
+    started = time.monotonic()
+    while time.monotonic() - started < _READY_TIMEOUT:
         time.sleep(_PROBE_INTERVAL)
         if _page_answers():
+            _notice(f'webview answered again after {time.monotonic() - started:.1f}s')
             return True
     _dead = True
+    _notice(f'webview did not answer within {_READY_TIMEOUT}s; jsc is off for the rest of this run')
     return False
+
+
+def _notice(message: str) -> None:
+    """Report a webview reset on stderr, where yt-dlp's own warnings go."""
+    print(f'[a-Shell] {message}', file=sys.stderr, flush=True)

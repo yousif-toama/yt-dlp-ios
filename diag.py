@@ -60,12 +60,15 @@ def report_pot():
 def describe_format(fmt):
     """One line per format: what it is, which client supplied it, and how it is signed."""
     query = parse_qs(urlparse(fmt.get('url') or '').query)
-    return '  {:<14} {:<5} {:<11} {:<9} {:<10} n={:<5} pot={:<5} {}'.format(
+    # Media URLs name the client they were issued to; manifest-backed formats have no `c`.
+    client = query.get('c', ['-'])[0]
+    return '  {:<14} {:<5} {:<11} {:<9} {:<10} {:<19} n={:<5} pot={:<5} {}'.format(
         str(fmt.get('format_id'))[:14],
         str(fmt.get('ext'))[:5],
         f'{fmt.get("width")}x{fmt.get("height")}'[:11],
         str(fmt.get('protocol'))[:9],
         str(fmt.get('vcodec') or fmt.get('acodec'))[:10],
+        client[:19],
         'n' in query,
         'pot' in query,
         str(fmt.get('format_note') or '')[:40],

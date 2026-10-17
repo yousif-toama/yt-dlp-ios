@@ -207,10 +207,7 @@ if _IMPORT_ERROR is None:
                     # Solving has been seen to come back empty on a later call after an
                     # earlier one succeeded, with a clean exit and nothing on stderr.
                     # Reloading the webview clears whatever state it got into.
-                    self.logger.warning(
-                        f'a-Shell jsc failed ({error}); reloading its webview and retrying '
-                        f'({attempt}/{_SOLVE_ATTEMPTS - 1})'
-                    )
+                    self.logger.warning(f'a-Shell jsc failed ({error}); retrying ({attempt}/{_SOLVE_ATTEMPTS - 1})')
                     if not ashell_webview.reset():
                         error = JsChallengeProviderError(f'{error}; the webview did not come back after a reset')
                         break
