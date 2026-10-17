@@ -153,14 +153,17 @@ def reset() -> bool:
 def _send_page_home() -> bool:
     """Flag the current page as stale, and send it back to ``wasm.html`` if it has left.
 
+    It goes back through the page's history rather than to ``wasm.html``'s URL: on device, a
+    page on youtube.com that assigns ``location`` to localhost stays where it is, while
+    ``history.back()`` returns to the ``wasm.html`` it left.
+
     Returns:
         Whether a navigation back was started. When it was not -- the page is ``wasm.html``,
         or did not answer at all -- ``jsc --reset`` is the way to reload it.
     """
-    page_url = json.dumps(_PAGE_URL)
     program = (
         f'globalThis.{_STALE_FLAG} = true;\n'
-        f"location.origin + location.pathname === {page_url} ? 'home' : (location.replace({page_url}), 'away');\n"
+        f"location.origin + location.pathname === {json.dumps(_PAGE_URL)} ? 'home' : (history.back(), 'away');\n"
     )
     try:
         completed = run_script(program, _PROBE_TIMEOUT)
