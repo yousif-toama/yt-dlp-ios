@@ -49,7 +49,7 @@ def script_dir() -> str | None:
     return _SCRIPT_DIR if os.path.isdir(_SCRIPT_DIR) else None
 
 
-def run(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+def run(args: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     """Run ``jsc`` with ``args``, capturing its output.
 
     Deliberately plain ``subprocess.run`` rather than ``yt_dlp.utils.Popen``: that wrapper
@@ -67,7 +67,7 @@ def run(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
     )
 
 
-def run_script(program: str, timeout: int) -> subprocess.CompletedProcess[str]:
+def run_script(program: str, timeout: float) -> subprocess.CompletedProcess[str]:
     """Write ``program`` to a temporary file and run it with ``jsc``."""
     script = tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8', dir=script_dir())
     try:

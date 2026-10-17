@@ -113,17 +113,17 @@ def _wrap_program(program: str, result_path: str) -> str:
     )
 
 
-def _run_jsc_raw(program: str, timeout: int = _PROBE_TIMEOUT) -> tuple[str, str, int]:
+def _run_jsc_raw(program: str) -> tuple[str, str, int]:
     """Run ``program`` exactly as written, returning (stdout, stderr, returncode).
 
     Used by the diagnostic, which needs to test one output mechanism per run. Anything that
     goes through ``_run_jsc`` is wrapped identically and so cannot tell the mechanisms apart.
     """
-    completed = ashell_webview.run_script(program, timeout)
+    completed = ashell_webview.run_script(program, _PROBE_TIMEOUT)
     return completed.stdout or '', completed.stderr or '', completed.returncode
 
 
-def _run_jsc(program: str, timeout: int = _SOLVE_TIMEOUT) -> tuple[str, str, int]:
+def _run_jsc(program: str, timeout: float) -> tuple[str, str, int]:
     """Run ``program`` under a-Shell's jsc, returning (output, stderr, returncode).
 
     ``output`` is whatever the program logged, read back from the result file when jsc's file
@@ -157,6 +157,11 @@ def _probe_runtime() -> bool:
         return False
     if _runtime_probe is not None:
         return _runtime_probe
+    if ashell_webview.is_dead():
+        # The other provider already waited out a reset that never answered.
+        _runtime_probe = False
+        _probe_detail = 'the webview stopped answering earlier in this run'
+        return _runtime_probe
 
     for attempt in range(_PROBE_ATTEMPTS):
         if attempt:
@@ -168,11 +173,13 @@ def _probe_runtime() -> bool:
                 _probe_detail = f'{_probe_detail}; the webview did not come back after a reset'
                 break
         try:
-            output, stderr, returncode = _run_jsc(_PROBE_SCRIPT, timeout=_PROBE_TIMEOUT)
-        except Exception as exc:  # noqa: BLE001 - any failure here just means no usable jsc
-            _runtime_probe = False
+            output, stderr, returncode = _run_jsc(_PROBE_SCRIPT, _PROBE_TIMEOUT)
+        except FileNotFoundError as exc:  # no jsc at all: this is not a-Shell
             _probe_detail = f'{type(exc).__name__}: {exc}'
-            return _runtime_probe
+            break
+        except Exception as exc:  # noqa: BLE001 - jsc exists but the page did not answer; reset it
+            _probe_detail = f'after {attempt + 1} attempt(s): {type(exc).__name__}: {exc}'
+            continue
 
         if _PROBE_SENTINEL in output:
             _runtime_probe = True
@@ -233,7 +240,7 @@ if _IMPORT_ERROR is None:
 
         def _solve_once(self, stdin: str, /) -> str:
             try:
-                output, stderr, returncode = _run_jsc(stdin)
+                output, stderr, returncode = _run_jsc(stdin, _SOLVE_TIMEOUT)
             except subprocess.TimeoutExpired as exc:
                 raise JsChallengeProviderError(f'a-Shell jsc did not finish within {exc.timeout}s') from exc
             if returncode:
@@ -294,6 +301,9 @@ _DIAGNOSTIC_CASES = (
 
 def diagnostic_report() -> list[str]:
     """Run each output mechanism on its own and report what came back, and by which route."""
+    if ashell_webview.is_dead():
+        # Each case would wait out its own timeout against a page that no longer answers.
+        return ['  skipped: the webview stopped answering, so no route can be tested']
     report = []
     for label, build in _DIAGNOSTIC_CASES:
         marker = tempfile.NamedTemporaryFile(mode='w', suffix='.marker', delete=False, dir=ashell_webview.script_dir())
@@ -311,11 +321,6 @@ def diagnostic_report() -> list[str]:
             f'  {label}: rc={returncode} file={written[:90]!r} out={stdout.strip()[:90]!r} err={stderr.strip()[:90]!r}'
         )
     return report
-
-
-def is_available() -> bool:
-    """Whether the provider is registered and a-Shell's jsc can actually run."""
-    return _IMPORT_ERROR is None and _probe_runtime()
 
 
 def unavailable_reason() -> str | None:
