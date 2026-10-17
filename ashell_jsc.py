@@ -26,11 +26,11 @@ Import this module before constructing ``yt_dlp.YoutubeDL``; registration is glo
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import subprocess
 import tempfile
-import time
+
+import ashell_webview
 
 # ``EJSBaseJCP`` is internal yt-dlp API -- only ``...jsc.provider`` is public -- and yt-dl.sh
 # upgrades yt-dlp on every run, so a future release may move or rename it. Failing soft here
@@ -47,9 +47,6 @@ except ImportError as exc:  # pragma: no cover - depends on the installed yt-dlp
 else:
     _IMPORT_ERROR = None
 
-# a-Shell can only read and write ~/Documents, ~/Library and ~/tmp.
-_SCRIPT_DIR = os.path.expanduser('~/Documents')
-
 _PROBE_SENTINEL = 'ashell_jsc_ok'
 _PROBE_SCRIPT = f'console.log("{_PROBE_SENTINEL}");\n'
 
@@ -59,10 +56,12 @@ _SOLVE_TIMEOUT = 600
 # The first attempt runs as-is; later ones reload a-Shell's webview and wait for it.
 _PROBE_ATTEMPTS = 3
 _SOLVE_ATTEMPTS = 3
-_RESET_SETTLE_SECONDS = 3
 
 _runtime_probe: bool | None = None
 _probe_detail: str | None = None
+# Set once solving has failed every attempt, so the rest of the run -- every later video in a
+# playlist -- goes straight to the clients that need no solver instead of retrying each time.
+_gave_up = False
 
 
 def _wrap_program(program: str, result_path: str) -> str:
@@ -101,32 +100,13 @@ def _wrap_program(program: str, result_path: str) -> str:
     )
 
 
-def _script_dir() -> str | None:
-    """Return the directory to write temporary files into, or None for the system default."""
-    return _SCRIPT_DIR if os.path.isdir(_SCRIPT_DIR) else None
-
-
 def _run_jsc_raw(program: str, timeout: int = _PROBE_TIMEOUT) -> tuple[str, str, int]:
     """Run ``program`` exactly as written, returning (stdout, stderr, returncode).
 
     Used by the diagnostic, which needs to test one output mechanism per run. Anything that
     goes through ``_run_jsc`` is wrapped identically and so cannot tell the mechanisms apart.
     """
-    script = tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8', dir=_script_dir())
-    try:
-        script.write(program)
-        script.close()
-        completed = subprocess.run(
-            ['jsc', script.name],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    finally:
-        pathlib.Path(script.name).unlink(missing_ok=True)
+    completed = ashell_webview.run_script(program, timeout)
     return completed.stdout or '', completed.stderr or '', completed.returncode
 
 
@@ -135,51 +115,19 @@ def _run_jsc(program: str, timeout: int = _SOLVE_TIMEOUT) -> tuple[str, str, int
 
     ``output`` is whatever the program logged, read back from the result file when jsc's file
     API is available and falling back to stdout otherwise.
-
-    Deliberately plain ``subprocess.run`` rather than ``yt_dlp.utils.Popen``: that wrapper
-    passes an explicit ``env=os.environ.copy()``, and ``jsc`` is an ios_system builtin
-    resolved through a-Shell's own command dictionary rather than a file on PATH.
     """
-    directory = _script_dir()
-    script = tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8', dir=directory)
-    result = tempfile.NamedTemporaryFile(mode='w', suffix='.out', delete=False, encoding='utf-8', dir=directory)
+    result = tempfile.NamedTemporaryFile(
+        mode='w', suffix='.out', delete=False, encoding='utf-8', dir=ashell_webview.script_dir()
+    )
     result.close()
     try:
-        script.write(_wrap_program(program, result.name))
-        script.close()
-        completed = subprocess.run(
-            ['jsc', script.name],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        completed = ashell_webview.run_script(_wrap_program(program, result.name), timeout)
         output = pathlib.Path(result.name).read_text(encoding='utf-8', errors='replace')
         if not output.strip():
             output = completed.stdout or ''
     finally:
-        pathlib.Path(script.name).unlink(missing_ok=True)
         pathlib.Path(result.name).unlink(missing_ok=True)
     return output, completed.stderr or '', completed.returncode
-
-
-def _reset_runtime() -> None:
-    """Ask a-Shell to reload the webview jsc runs against, and give it time to load."""
-    try:
-        subprocess.run(
-            ['jsc', '--reset'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=_PROBE_TIMEOUT,
-            check=False,
-        )
-    except Exception:  # noqa: BLE001 - best effort recovery
-        pass
-    time.sleep(_RESET_SETTLE_SECONDS)
 
 
 def _probe_runtime() -> bool:
@@ -203,7 +151,9 @@ def _probe_runtime() -> bool:
             # script: the jsc file API, println(), and console.log (rebound to println on
             # wasm.html:141). A Shortcut can run before that page has finished loading, in
             # which case all three are missing at once. `jsc --reset` reloads the webview.
-            _reset_runtime()
+            if not ashell_webview.reset():
+                _probe_detail = f'{_probe_detail}; the webview did not come back after a reset'
+                break
         try:
             output, stderr, returncode = _run_jsc(_PROBE_SCRIPT, timeout=_PROBE_TIMEOUT)
         except Exception as exc:  # noqa: BLE001 - any failure here just means no usable jsc
@@ -237,7 +187,7 @@ if _IMPORT_ERROR is None:
             # self.runtime_info against the runtimes yt-dlp knows how to probe, and jsc is not
             # one of them. self._available is set to False by the base class when it cannot
             # find a usable solver script.
-            return self._available and _probe_runtime()
+            return self._available and not _gave_up and not ashell_webview.is_dead() and _probe_runtime()
 
         def _construct_stdin(self, player: str, preprocessed: bool, requests, /) -> str:
             program = super()._construct_stdin(player, preprocessed, requests)
@@ -249,6 +199,7 @@ if _IMPORT_ERROR is None:
             return program.replace('"output_preprocessed": true', '"output_preprocessed": false')
 
         def _run_js_runtime(self, stdin: str, /) -> str:
+            global _gave_up
             self.logger.debug(f'Running a-Shell jsc on a {len(stdin)} byte script')
             error = None
             for attempt in range(_SOLVE_ATTEMPTS):
@@ -257,27 +208,33 @@ if _IMPORT_ERROR is None:
                     # earlier one succeeded, with a clean exit and nothing on stderr.
                     # Reloading the webview clears whatever state it got into.
                     self.logger.warning(
-                        f'a-Shell jsc returned nothing; reloading its webview and retrying '
+                        f'a-Shell jsc failed ({error}); reloading its webview and retrying '
                         f'({attempt}/{_SOLVE_ATTEMPTS - 1})'
                     )
-                    _reset_runtime()
-
-                output, stderr, returncode = _run_jsc(stdin)
-                if returncode:
-                    # yt-dlp's own QuickJS provider also treats any stderr output as a
-                    # failure. jsc is noisier than that, so only the exit status counts.
-                    message = f'Error running a-Shell jsc (returncode: {returncode})'
-                    if stderr:
-                        message = f'{message}: {stderr.strip()}'
-                    error = JsChallengeProviderError(message)
-                    continue
-
+                    if not ashell_webview.reset():
+                        error = JsChallengeProviderError(f'{error}; the webview did not come back after a reset')
+                        break
                 try:
-                    return self._extract_json(output, stderr)
+                    return self._solve_once(stdin)
                 except JsChallengeProviderError as exc:
                     error = exc
 
-            raise error
+            _gave_up = True
+            raise JsChallengeProviderError(f'{error}. The jsc solver is off for the rest of this run')
+
+        def _solve_once(self, stdin: str, /) -> str:
+            try:
+                output, stderr, returncode = _run_jsc(stdin)
+            except subprocess.TimeoutExpired as exc:
+                raise JsChallengeProviderError(f'a-Shell jsc did not finish within {exc.timeout}s') from exc
+            if returncode:
+                # yt-dlp's own QuickJS provider also treats any stderr output as a
+                # failure. jsc is noisier than that, so only the exit status counts.
+                message = f'Error running a-Shell jsc (returncode: {returncode})'
+                if stderr:
+                    message = f'{message}: {stderr.strip()}'
+                raise JsChallengeProviderError(message)
+            return self._extract_json(output, stderr)
 
         @staticmethod
         def _extract_json(output: str, stderr: str, /) -> str:
@@ -330,7 +287,7 @@ def diagnostic_report() -> list[str]:
     """Run each output mechanism on its own and report what came back, and by which route."""
     report = []
     for label, build in _DIAGNOSTIC_CASES:
-        marker = tempfile.NamedTemporaryFile(mode='w', suffix='.marker', delete=False, dir=_script_dir())
+        marker = tempfile.NamedTemporaryFile(mode='w', suffix='.marker', delete=False, dir=ashell_webview.script_dir())
         marker.close()
         marker_path = pathlib.Path(marker.name)
         try:
