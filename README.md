@@ -25,7 +25,7 @@ On other platforms `ashell_jsc.py` detects that `jsc` is absent and disables its
 
 So `ashell_jsc.py` wraps the solver program to collect its output and then write it to a file, pass it to `println()`, *and* return it as the completion value. `evaluateJavaScript` rejects an `undefined` completion value with "a result of an unsupported type", which is why simply logging is not enough.
 
-The wrapper is a function rather than a prelude because `wasm.html` declares `const jsc` while the solver bundle declares `var jsc` at top level; unscoped, that is a redeclaration `SyntaxError`.
+The program itself runs in a throwaway sandboxed iframe. yt-dlp's solver fakes a browser environment for runtimes that have none, including `globalThis.location = new URL("https://www.youtube.com/watch?v=yt-dlp-wins")`. In a real page that assignment navigates, so run directly it sent a-Shell's webview to YouTube, taking `wasm.html` and its `jsc` file API with it: PO tokens then failed until a-Shell next came to the foreground and reloaded the page. In the iframe it navigates only the iframe, which is removed straight after. The iframe's own global scope also keeps the solver bundle's top-level `var jsc` clear of the `const jsc` that `wasm.html` declares.
 
 yt-dlp also asks the solver to return the entire transformed player and then discards it. That is suppressed here, cutting roughly 4 MB per solve off the round trip across the webview bridge.
 

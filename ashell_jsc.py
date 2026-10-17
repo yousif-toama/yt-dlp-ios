@@ -16,9 +16,12 @@ page is ``wasm.html``. Two consequences drive the design here:
   completion value, and in a Shortcut run even a bare ``42;`` comes back as "a result of an
   unsupported type". ``wasm.html`` instead provides ``println()`` and a ``jsc`` file API, so
   the result is written to a file and read back from Python. That works in every context.
-- **``wasm.html`` declares ``const jsc``.** yt-dlp's solver bundle declares ``var jsc`` at top
-  level, which would be a redeclaration conflict against that lexical binding, so the program
-  is wrapped in a function to scope it.
+- **The page is a real browser page.** yt-dlp's solver fakes a browser environment for
+  runtimes that lack one, including ``globalThis.location = new URL(...)``. In a page, that
+  assignment navigates: it takes the webview away from ``wasm.html``, and with it the ``jsc``
+  file API that every later call depends on. So the program runs in a throwaway iframe, where
+  it can only navigate the iframe. That also keeps the bundle's top-level ``var jsc`` clear of
+  the ``const jsc`` that ``wasm.html`` declares.
 
 Import this module before constructing ``yt_dlp.YoutubeDL``; registration is global.
 """
@@ -73,21 +76,30 @@ def _wrap_program(program: str, result_path: str) -> str:
     wrapper returns its result as well as writing it. ``evaluateJavaScript`` rejects an
     ``undefined`` completion value outright with "a result of an unsupported type".
 
-    The a-Shell APIs are captured as parameters before the program runs, because the solver
-    bundle shadows the name ``jsc`` with its own function inside this same scope.
+    The program itself is evaluated in a sandboxed iframe's global scope, with that frame's
+    ``console`` replaced by the collector. Any navigation it starts belongs to the iframe, and
+    the sandbox stops it reaching the page; the frame is removed before that navigation can
+    load anything.
     """
     return (
-        '(function (__api, __println, __console) {\n'
+        '(function (__api, __println, __console, __program) {\n'
         '  var __out = [];\n'
         '  var console = {\n'
         "    log: function () { __out.push(Array.prototype.join.call(arguments, ' ')); },\n"
         '    info: function () {}, warn: function () {},\n'
         '    error: function () {}, debug: function () {},\n'
         '  };\n'
+        "  var __frame = document.createElement('iframe');\n"
+        "  __frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');\n"
+        "  __frame.style.display = 'none';\n"
+        '  document.documentElement.appendChild(__frame);\n'
         '  try {\n'
-        f'{program}\n'
+        '    __frame.contentWindow.console = console;\n'
+        '    __frame.contentWindow.eval(__program);\n'
         '  } catch (e) {\n'
         "    __out.push('__ashell_error__ ' + (e && e.stack ? e.stack : e));\n"
+        '  } finally {\n'
+        '    __frame.remove();\n'
         '  }\n'
         "  var __text = __out.join('\\n');\n"
         f'  try {{ if (__api) __api.writeFile({json.dumps(result_path)}, __text); }} catch (e) {{}}\n'
@@ -96,7 +108,8 @@ def _wrap_program(program: str, result_path: str) -> str:
         '  return __text;\n'
         "})(typeof jsc !== 'undefined' ? jsc : null,\n"
         "   typeof println !== 'undefined' ? println : null,\n"
-        "   typeof console !== 'undefined' ? console : null);\n"
+        "   typeof console !== 'undefined' ? console : null,\n"
+        f'   {json.dumps(program)});\n'
     )
 
 
