@@ -205,11 +205,21 @@ def _probe_runtime() -> bool:
     def build(result_path: str, started_path: str) -> str:
         return f'jsc.writeFile({json.dumps(result_path)}, {json.dumps(f"{{{_PROBE_SENTINEL}}}")});'
 
-    try:
-        _runtime_probe = _PROBE_SENTINEL in _run_in_workdir(build, timeout=10, started=False)
-    except Exception as exc:  # noqa: BLE001 - any failure here just means no usable jsc
-        _runtime_probe = False
-        _probe_detail = f'{type(exc).__name__}: {exc}'
+    _runtime_probe = False
+    for attempt in range(_ATTEMPTS):
+        # A page that has left wasm.html still runs scripts, so the solver's own probe passes
+        # and never resets it, but it has no file bridge. A reset sends it back.
+        if attempt and not ashell_webview.reset():
+            break
+        try:
+            _runtime_probe = _PROBE_SENTINEL in _run_in_workdir(build, timeout=10, started=False)
+        except FileNotFoundError as exc:  # no jsc at all: this is not a-Shell
+            _probe_detail = f'{type(exc).__name__}: {exc}'
+            break
+        except Exception as exc:  # noqa: BLE001 - jsc ran but the file bridge did not answer
+            _probe_detail = f'{type(exc).__name__}: {exc}'
+        if _runtime_probe:
+            break
     return _runtime_probe
 
 

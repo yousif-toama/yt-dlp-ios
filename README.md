@@ -47,7 +47,7 @@ That webview also outlives the Python process, so a minted session is parked on 
 
 ## Fallback when the webview fails
 
-Both providers depend on one WKWebView page. iOS can kill that page's web content process, and a-Shell does not reload it on its own; `jsc --reset` reloads it, but returns before the page has loaded. `ashell_webview.py` therefore follows a reset by probing until the page answers. If it does not answer within 30 seconds, or if a provider has used up its retries, that provider stays off for the rest of the run. yt-dlp asks for a PO token once per format and only remembers one that succeeded, so without this a broken page would be retried, and waited on, for every format of every video.
+Both providers depend on one WKWebView page. It can navigate away from `wasm.html`, and iOS can kill its web content process, which a-Shell does not reload on its own. `jsc --reset` reloads whatever URL the page is on, and returns before it has loaded. So `ashell_webview.py` first sends a page that has left back to `wasm.html` (otherwise it runs `jsc --reset`), then probes until the page answers. If it does not answer within 30 seconds, or if a provider has used up its retries, that provider stays off for the rest of the run. yt-dlp asks for a PO token once per format and only remembers one that succeeded, so without this a broken page would be retried, and waited on, for every format of every video.
 
 The client list ends with `visionos`, which needs neither a PO token nor a JS runtime and still offers formats up to 1080p60 and beyond. yt-dlp keeps the first client's copy of each format, so `visionos` only fills in what `web_safari` and `web_embedded` could not provide. It cannot play "made for kids" videos.
 

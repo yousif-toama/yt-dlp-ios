@@ -1,10 +1,11 @@
 """The a-Shell webview that ``jsc`` evaluates against, shared by both providers.
 
-``ashell_jsc`` and ``ashell_pot`` run in the same WKWebView page, so they share its failure
-modes. iOS can kill that page's web content process -- a multi-megabyte solver script and a
-BotGuard VM make it a large one -- and a-Shell has no handler that brings it back, so every
-later ``jsc`` call fails. ``jsc --reset`` reloads it, but asynchronously: the command returns
-before the page has started loading, let alone finished.
+``ashell_jsc`` and ``ashell_pot`` run in the same WKWebView page, ``wasm.html``, so they share
+its failure modes. The page can navigate away -- yt-dlp's solver used to send it to YouTube
+-- after which scripts still run but the ``jsc`` file API is gone. iOS can also kill the
+page's web content process, and a-Shell has no handler that brings it back. ``jsc --reset``
+reloads the page, but asynchronously, and it reloads whatever URL the webview is on, so a
+page that has navigated away has to be sent back to ``wasm.html`` explicitly.
 
 So recovery is a reset followed by probing until the page answers again. When it never does,
 the page is recorded as dead and both providers stop claiming requests for the rest of the
@@ -24,6 +25,10 @@ import time
 
 # a-Shell can only read and write ~/Documents, ~/Library and ~/tmp.
 _SCRIPT_DIR = os.path.expanduser('~/Documents')
+
+# Where a-Shell loads its page from (SceneDelegate.swift, sceneWillEnterForeground). a-Shell
+# mini serves it on port 8334, but has no Python to run this.
+_PAGE_URL = 'https://localhost:8443/wasm.html'
 
 _RESET_TIMEOUT = 60
 _READY_TIMEOUT = 30
@@ -110,14 +115,11 @@ def reset() -> bool:
     """
     global _dead
     _notice('jsc failed; reloading its webview')
-    try:
-        run_script(f'globalThis.{_STALE_FLAG} = true; "ok";', _PROBE_TIMEOUT)
-    except Exception:  # noqa: BLE001 - a page too broken to flag is about to be reloaded anyway
-        pass
-    try:
-        run(['--reset'], _RESET_TIMEOUT)
-    except Exception:  # noqa: BLE001 - the probes below decide whether the reset worked
-        pass
+    if not _send_page_home():
+        try:
+            run(['--reset'], _RESET_TIMEOUT)
+        except Exception:  # noqa: BLE001 - the probes below decide whether the reset worked
+            pass
 
     started = time.monotonic()
     while time.monotonic() - started < _READY_TIMEOUT:
@@ -128,6 +130,25 @@ def reset() -> bool:
     _dead = True
     _notice(f'webview did not answer within {_READY_TIMEOUT}s; jsc is off for the rest of this run')
     return False
+
+
+def _send_page_home() -> bool:
+    """Flag the current page as stale, and send it back to ``wasm.html`` if it has left.
+
+    Returns:
+        Whether a navigation back was started. When it was not -- the page is ``wasm.html``,
+        or did not answer at all -- ``jsc --reset`` is the way to reload it.
+    """
+    page_url = json.dumps(_PAGE_URL)
+    program = (
+        f'globalThis.{_STALE_FLAG} = true;\n'
+        f"location.origin + location.pathname === {page_url} ? 'home' : (location.replace({page_url}), 'away');\n"
+    )
+    try:
+        completed = run_script(program, _PROBE_TIMEOUT)
+    except Exception:  # noqa: BLE001 - a page too broken to answer is left to `jsc --reset`
+        return False
+    return 'away' in (completed.stdout or '')
 
 
 def _notice(message: str) -> None:
