@@ -51,6 +51,10 @@ Both providers depend on one WKWebView page. It can navigate away from `wasm.htm
 
 The client list ends with `visionos`, which needs neither a PO token nor a JS runtime and still offers formats up to 1080p60 and beyond. yt-dlp keeps the first client's copy of each format, so `visionos` only fills in what `web_safari` and `web_embedded` could not provide. It cannot play "made for kids" videos.
 
+## Testing
+
+See [TESTING.md](TESTING.md) for the desktop test suite, which runs these modules against a fake a-Shell webview, and for the checks that only a device can run.
+
 ## iOS Installation
 
 1.  Download the **[a-Shell](https://apps.apple.com/us/app/a-shell/id1473805438)** app from the App Store.
