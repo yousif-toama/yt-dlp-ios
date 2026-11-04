@@ -2,6 +2,6 @@
 # unpinned in requirements.txt, because YouTube breaks old yt-dlp releases; the tools here are
 # pinned so local runs and CI agree.
 -r requirements.txt
-pytest==9.1.1
-ruff==0.16.10
-ty==0.0.84
+pytest==9.2.0
+ruff==0.17.3
+ty==0.0.93
